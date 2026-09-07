@@ -532,72 +532,63 @@ public abstract class AbstractQueuedSynchronizer
 
 
     /**
-     * Release action for shared mode -- signals successor and ensures
-     * propagation. (Note: For exclusive mode, release just amounts
-     * to calling unparkSuccessor of head if it needs signal.)
+     * 唤醒后继节点，唤醒链能一直传播下去（共享模式）
+     *  可能被多个线程同时调用，所以它必须用 for (;;) + CAS 来保证线程安全。
      */
     private void doReleaseShared() {
-        /*
-         * Ensure that a release propagates, even if there are other
-         * in-progress acquires/releases.  This proceeds in the usual
-         * way of trying to unparkSuccessor of head if it needs
-         * signal. But if it does not, status is set to PROPAGATE to
-         * ensure that upon release, propagation continues.
-         * Additionally, we must loop in case a new node is added
-         * while we are doing this. Also, unlike other uses of
-         * unparkSuccessor, we need to know if CAS to reset status
-         * fails, if so rechecking.
-         */
-        for (;;) {
-            Node h = head;
-            if (h != null && h != tail) {
-                int ws = h.waitStatus;
-                if (ws == Node.SIGNAL) {
+        for (;;) { // 步骤 1：进入自旋，读取当前 head
+            Node h = head; // 动态读取 head，而不是用某个固定的节点。因为 head 在整个过程中可能被其他线程改变（别的线程获取资源后变成了新 head）。
+            // 步骤 2：判断队列中是否有后继节点
+            if (h != null && //  队列已经初始化
+                    h != tail) { // head 不等于 tail，说明队列中至少有 2 个节点，即有后继节点在等
+                int ws = h.waitStatus; // 步骤 3：读取 head 的状态，分情况处理
+
+                if (ws == Node.SIGNAL) {  // 有后继在等我唤醒
+                    // 为什么改成 0？SIGNAL的含义是"我释放时要唤醒后继"。现在你正在唤醒了，承诺已兑现，状态清回 0。
+                    // 为什么用 CAS？ 因为多个线程可能同时进入 doReleaseShared。CAS 保证只有一个线程能成功执行 unpark，其他线程 CAS 失败后重试，避免重复唤醒。
                     if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
-                        continue;            // loop to recheck cases
-                    unparkSuccessor(h);
+                        continue;
+                    unparkSuccessor(h); // 唤醒后继节点
                 }
-                else if (ws == 0 &&
-                         !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
-                    continue;                // loop on failed CAS
+                else if (ws == 0 && // 没有待唤醒的标记，但可能有并发遗漏
+                        !compareAndSetWaitStatus(h, 0, Node.PROPAGATE)) // PROPAGATE 就是一个"有人释放过资源，你应该继续传播"的提醒标记。
+                    continue;
             }
-            if (h == head)                   // loop if head changed
+
+            // h == head（没变）：说明从循环开始到现在，head 没有被其他线程改变。该做的操作（unpark 或设 PROPAGATE）已经完成，可以安全退出了
+            // h != head（变了）：说明在你执行的过程中，有后继线程被唤醒了，它成功获取了资源，调用了 setHeadAndPropagate，head 指向了新节点。
+            // head 变了意味着什么？意味着新 head 可能还有后继需要被唤醒。所以不能退出，必须回到步骤 1 重新读 head，检查新 head 的状态，继续传播。
+            // 这就是所谓的"head 变化则一直自旋，保证传播不丢失"。
+            if (h == head) // 步骤 5：退出条件
                 break;
         }
     }
 
+
     /**
-     * Sets head of queue, and checks if successor may be waiting
-     * in shared mode, if so propagating if either propagate > 0 or
-     * PROPAGATE status was set.
-     *
-     * @param node the node
-     * @param propagate the return value from a tryAcquireShared
+     * 线程成功获取资源后，发现还有剩余，主动传播
      */
     private void setHeadAndPropagate(Node node, int propagate) {
-        Node h = head; // Record old head for check below
-        setHead(node);
-        /*
-         * Try to signal next queued node if:
-         *   Propagation was indicated by caller,
-         *     or was recorded (as h.waitStatus) by a previous operation
-         *     (note: this uses sign-check of waitStatus because
-         *      PROPAGATE status may transition to SIGNAL.)
-         * and
-         *   The next node is waiting in shared mode,
-         *     or we don't know, because it appears null
-         *
-         * The conservatism in both of these checks may cause
-         * unnecessary wake-ups, but only when there are multiple
-         * racing acquires/releases, so most need signals now or soon
-         * anyway.
-         */
-        if (propagate > 0 || h == null || h.waitStatus < 0) {
-            Node s = node.next;
-            if (s == null || s.isShared())
-                doReleaseShared();
+        Node h = head; // 记录旧 head
+        // 第一件：上位（setHead）
+        setHead(node); // 自己变成新 head
+
+        // 第二件：判断是否需要传播
+        if (propagate > 0 ||    // ① 还有剩余资源
+                h == null ||    // ② 旧 head 为空（边界情况）
+                h.waitStatus < 0 ||     // ③ 旧 head 有 SIGNAL/PROPAGATE 标记
+                (h = head) == null ||   // ④ 新 head 为空（几乎不可能，防御性检查）
+                h.waitStatus < 0) {     // ⑤ 新 head 有 SIGNAL/PROPAGATE 标记
+
+            Node s = node.next; // 获取后继节点
+
+            // 第三件：检查后继节点，决定是否启动引擎
+            if (s == null ||  //  ① 后继节点暂时不可见（入队还没完成 next 指针的设置）
+                    s.isShared()) // ② 后继是共享模式
+                doReleaseShared(); // 传播-唤醒后继节点
         }
     }
+
 
     // Utilities for various versions of acquire
 
@@ -666,7 +657,7 @@ public abstract class AbstractQueuedSynchronizer
             } while (pred.waitStatus > 0);
             pred.next = node; // 将活着有效节点的后驱指向当前节点 (如 B <- A)。完成双向链表的重新连接(A ⇄ B)。
         } else {
-            /* 3. 情况三：ws == 0 或 PROPAGATE（共享模式下用的）
+            /* 3. 情况三：ws == 0（节点初始化的时候） 或 PROPAGATE（共享模式下用的）
              * 含义：前驱节点是个正常节点（比如刚入队还是初始状态0），但还没设置“释放时要唤醒后继”的标记。
              * 动作：通过 CAS 把前驱节点的状态改成 SIGNAL，然后返回 false。
              */
@@ -799,37 +790,40 @@ public abstract class AbstractQueuedSynchronizer
         }
     }
 
-    /**
-     * Acquires in shared uninterruptible mode.
-     * @param arg the acquire argument
-     */
+
     private void doAcquireShared(int arg) {
-        final Node node = addWaiter(Node.SHARED);
-        boolean failed = true;
+
+        // 独占模式：Node.EXCLUSIVE；共享模式：Node.SHARED。
+        final Node node = addWaiter(Node.SHARED); // 自旋加入队尾，与独占模式类似。只是传入的参数不同。
+        boolean failed = true; // 标记是否成功拿到资源，默认认为获取资源是失败的
         try {
-            boolean interrupted = false;
+            boolean interrupted = false; // 标记是否被中断过
+            //自旋
             for (;;) {
-                final Node p = node.predecessor();
-                if (p == head) {
-                    int r = tryAcquireShared(arg);
-                    if (r >= 0) {
-                        setHeadAndPropagate(node, r);
-                        p.next = null; // help GC
-                        if (interrupted)
-                            selfInterrupt();
-                        failed = false;
+                final Node p = node.predecessor(); // 获取我前面的节点
+                if (p == head) { // 情况一：看我前面 是 头节点
+                    int r = tryAcquireShared(arg); // 尝试获取共享资源
+                    if (r >= 0) { // 如果 r>=0 表示获取共享资源成功。
+                        setHeadAndPropagate(node, r); //自己上位成为新 head；判断是否需要"传播唤醒"，如果需要，调用 doReleaseShared() 唤醒后继
+
+                        p.next = null;  // 原来前节点废弃（方便JVM对头结点进行Gc）
+                        if (interrupted) // 如果线程被中断过
+                            selfInterrupt(); // 标记线程中断
+                        failed = false; // 标记已经获取到资源
                         return;
                     }
                 }
+                // 与独占模式下的操作类似。
                 if (shouldParkAfterFailedAcquire(p, node) &&
-                    parkAndCheckInterrupt())
+                        parkAndCheckInterrupt())
                     interrupted = true;
             }
-        } finally {
+        } finally { // 兜底保护
             if (failed)
                 cancelAcquire(node);
         }
     }
+
 
     /**
      * Acquires in shared interruptible mode.
@@ -923,67 +917,26 @@ public abstract class AbstractQueuedSynchronizer
         throw new UnsupportedOperationException();
     }
 
-
     /**
-     * Attempts to acquire in shared mode. This method should query if
-     * the state of the object permits it to be acquired in the shared
-     * mode, and if so to acquire it.
+     * 以共享模式尝试获取资源，交给子类实现。
+     * 返回小于0。说明获取资源失败。
+     * 返回0。说明当前线程获取同步状态成功，其他线程无法获取，也就不需要唤醒它的后继结点进行传播。
+     * 返回大于0。说明当前线程获取同步状态后要唤醒它的后继结点，让其他线程也尝试去获取同步状态。
      *
-     * <p>This method is always invoked by the thread performing
-     * acquire.  If this method reports failure, the acquire method
-     * may queue the thread, if it is not already queued, until it is
-     * signalled by a release from some other thread.
-     *
-     * <p>The default implementation throws {@link
-     * UnsupportedOperationException}.
-     *
-     * @param arg the acquire argument. This value is always the one
-     *        passed to an acquire method, or is the value saved on entry
-     *        to a condition wait.  The value is otherwise uninterpreted
-     *        and can represent anything you like.
-     * @return a negative value on failure; zero if acquisition in shared
-     *         mode succeeded but no subsequent shared-mode acquire can
-     *         succeed; and a positive value if acquisition in shared
-     *         mode succeeded and subsequent shared-mode acquires might
-     *         also succeed, in which case a subsequent waiting thread
-     *         must check availability. (Support for three different
-     *         return values enables this method to be used in contexts
-     *         where acquires only sometimes act exclusively.)  Upon
-     *         success, this object has been acquired.
-     * @throws IllegalMonitorStateException if acquiring would place this
-     *         synchronizer in an illegal state. This exception must be
-     *         thrown in a consistent fashion for synchronization to work
-     *         correctly.
-     * @throws UnsupportedOperationException if shared mode is not supported
      */
-    protected int tryAcquireShared(int arg) {
+     protected int tryAcquireShared(int arg) {
         throw new UnsupportedOperationException();
-    }
+     }
+
 
     /**
-     * Attempts to set the state to reflect a release in shared mode.
-     *
-     * <p>This method is always invoked by the thread performing release.
-     *
-     * <p>The default implementation throws
-     * {@link UnsupportedOperationException}.
-     *
-     * @param arg the release argument. This value is always the one
-     *        passed to a release method, or the current state value upon
-     *        entry to a condition wait.  The value is otherwise
-     *        uninterpreted and can represent anything you like.
-     * @return {@code true} if this release of shared mode may permit a
-     *         waiting acquire (shared or exclusive) to succeed; and
-     *         {@code false} otherwise
-     * @throws IllegalMonitorStateException if releasing would place this
-     *         synchronizer in an illegal state. This exception must be
-     *         thrown in a consistent fashion for synchronization to work
-     *         correctly.
-     * @throws UnsupportedOperationException if shared mode is not supported
+     * 共享模式的释放资源,需要子类实现
      */
+
     protected boolean tryReleaseShared(int arg) {
         throw new UnsupportedOperationException();
     }
+
 
     /**
      * Returns {@code true} if synchronization is held exclusively with
@@ -1085,22 +1038,16 @@ public abstract class AbstractQueuedSynchronizer
         return false;
     }
 
-
     /**
-     * Acquires in shared mode, ignoring interrupts.  Implemented by
-     * first invoking at least once {@link #tryAcquireShared},
-     * returning on success.  Otherwise the thread is queued, possibly
-     * repeatedly blocking and unblocking, invoking {@link
-     * #tryAcquireShared} until success.
-     *
-     * @param arg the acquire argument.  This value is conveyed to
-     *        {@link #tryAcquireShared} but is otherwise uninterpreted
-     *        and can represent anything you like.
+     * 以共享模式获取资源
      */
     public final void acquireShared(int arg) {
+        // 尝试获取资源。返回正数，代表获取成功；返回负数，代表失败。
         if (tryAcquireShared(arg) < 0)
+            // 没有获取到共享资源，添加到同步队列，自旋尝试再次获取资源
             doAcquireShared(arg);
     }
+
 
     /**
      * Acquires in shared mode, aborting if interrupted.  Implemented
@@ -1147,22 +1094,20 @@ public abstract class AbstractQueuedSynchronizer
             doAcquireSharedNanos(arg, nanosTimeout);
     }
 
+
     /**
-     * Releases in shared mode.  Implemented by unblocking one or more
-     * threads if {@link #tryReleaseShared} returns true.
-     *
-     * @param arg the release argument.  This value is conveyed to
-     *        {@link #tryReleaseShared} but is otherwise uninterpreted
-     *        and can represent anything you like.
-     * @return the value returned from {@link #tryReleaseShared}
+     * 释放资源（共享模式）
      */
     public final boolean releaseShared(int arg) {
+        // 尝试释放共享资源。返回true,说明成功；返回 false，说明失败
         if (tryReleaseShared(arg)) {
+            // 通过自旋 唤醒后继节点（传播）
             doReleaseShared();
             return true;
         }
         return false;
     }
+
 
     // Queue inspection methods
 
