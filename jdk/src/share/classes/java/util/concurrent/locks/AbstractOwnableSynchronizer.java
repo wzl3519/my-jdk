@@ -54,31 +54,24 @@ public abstract class AbstractOwnableSynchronizer
     private static final long serialVersionUID = 3737899427754241961L;
 
     /**
-     * Empty constructor for use by subclasses.
+     * 构造器
      */
     protected AbstractOwnableSynchronizer() { }
 
     /**
-     * The current owner of exclusive mode synchronization.
+     * 独占模式线程 (一个线程对象)
      */
     private transient Thread exclusiveOwnerThread;
 
     /**
-     * Sets the thread that currently owns exclusive access.
-     * A {@code null} argument indicates that no thread owns access.
-     * This method does not otherwise impose any synchronization or
-     * {@code volatile} field accesses.
-     * @param thread the owner thread
+     * 将某线程设置独占模式
      */
     protected final void setExclusiveOwnerThread(Thread thread) {
         exclusiveOwnerThread = thread;
     }
 
     /**
-     * Returns the thread last set by {@code setExclusiveOwnerThread},
-     * or {@code null} if never set.  This method does not otherwise
-     * impose any synchronization or {@code volatile} field accesses.
-     * @return the owner thread
+     *  返回独占模式的线程
      */
     protected final Thread getExclusiveOwnerThread() {
         return exclusiveOwnerThread;
