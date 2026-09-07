@@ -506,36 +506,30 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
-     * Wakes up node's successor, if one exists.
-     *
-     * @param node the node
+     * 唤醒后继结点
      */
     private void unparkSuccessor(Node node) {
-        /*
-         * If status is negative (i.e., possibly needing signal) try
-         * to clear in anticipation of signalling.  It is OK if this
-         * fails or if status is changed by waiting thread.
-         */
-        int ws = node.waitStatus;
-        if (ws < 0)
-            compareAndSetWaitStatus(node, ws, 0);
 
-        /*
-         * Thread to unpark is held in successor, which is normally
-         * just the next node.  But if cancelled or apparently null,
-         * traverse backwards from tail to find the actual
-         * non-cancelled successor.
-         */
-        Node s = node.next;
+        int ws = node.waitStatus; // 获取节点状态
+        if (ws < 0) // 如果 waitStatus 是负数（通常就是 SIGNAL = -1），表示是"我释放锁时要唤醒后继"。
+            compareAndSetWaitStatus(node, ws, 0); // 把它清成 0，表示"唤醒任务已执行"。
+
+        Node s = node.next; // 获取后继节点
+        // s == null： 后继节点不存在（可能是队列刚初始化，或者后继刚好被取消导致 next 被置空）
+        // s.waitStatus > 0：后继节点是 CANCELLED 状态（线程取消了等待）
         if (s == null || s.waitStatus > 0) {
-            s = null;
+            s = null;  // 临时设置后继结点 没有
+            // 从 tail 往前遍历，每碰到一个有效节点就更新 s = t。因为是从后往前走，最后 s 会停留在最前面（离 node 最近）的那个有效节点上。
             for (Node t = tail; t != null && t != node; t = t.prev)
                 if (t.waitStatus <= 0)
                     s = t;
         }
+        // 找到有效的后继节点
         if (s != null)
+            // 唤醒节点 s 对应的线程
             LockSupport.unpark(s.thread);
     }
+
 
     /**
      * Release action for shared mode -- signals successor and ensures
@@ -922,32 +916,13 @@ public abstract class AbstractQueuedSynchronizer
         throw new UnsupportedOperationException();
     }
 
-
     /**
-     * Attempts to set the state to reflect a release in exclusive
-     * mode.
-     *
-     * <p>This method is always invoked by the thread performing release.
-     *
-     * <p>The default implementation throws
-     * {@link UnsupportedOperationException}.
-     *
-     * @param arg the release argument. This value is always the one
-     *        passed to a release method, or the current state value upon
-     *        entry to a condition wait.  The value is otherwise
-     *        uninterpreted and can represent anything you like.
-     * @return {@code true} if this object is now in a fully released
-     *         state, so that any waiting threads may attempt to acquire;
-     *         and {@code false} otherwise.
-     * @throws IllegalMonitorStateException if releasing would place this
-     *         synchronizer in an illegal state. This exception must be
-     *         thrown in a consistent fashion for synchronization to work
-     *         correctly.
-     * @throws UnsupportedOperationException if exclusive mode is not supported
+     * 释放资源，由子类完成实现
      */
     protected boolean tryRelease(int arg) {
         throw new UnsupportedOperationException();
     }
+
 
     /**
      * Attempts to acquire in shared mode. This method should query if
@@ -1092,24 +1067,24 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
-     * Releases in exclusive mode.  Implemented by unblocking one or
-     * more threads if {@link #tryRelease} returns true.
-     * This method can be used to implement method {@link Lock#unlock}.
-     *
-     * @param arg the release argument.  This value is conveyed to
-     *        {@link #tryRelease} but is otherwise uninterpreted and
-     *        can represent anything you like.
-     * @return the value returned from {@link #tryRelease}
+     * 释放独占锁成功后，会唤醒同步队列中最前面的那个有效等待者。
      */
     public final boolean release(int arg) {
-        if (tryRelease(arg)) {
-            Node h = head;
+        if (tryRelease(arg)) { // 真正释放锁。留给子类实现的抽象方法
+
+            Node h = head; // 获取队列的头结点
+            //条件 1： 如果 h == null，说明队列里根本没有任何等待者，不需要唤醒任何人。 或者极端情况：队列刚初始化但还没人入队。
+            //条件 2： waitStatus == 0，说明后面没有任何线程在等我唤醒它
             if (h != null && h.waitStatus != 0)
+                // 唤醒后继结点
                 unparkSuccessor(h);
+            // 释放独占的资源成功，返回 true
             return true;
         }
+        // 释放独占的资源失败，返回 false
         return false;
     }
+
 
     /**
      * Acquires in shared mode, ignoring interrupts.  Implemented by
