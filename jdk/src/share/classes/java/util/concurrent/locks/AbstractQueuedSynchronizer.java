@@ -939,19 +939,7 @@ public abstract class AbstractQueuedSynchronizer
 
 
     /**
-     * Returns {@code true} if synchronization is held exclusively with
-     * respect to the current (calling) thread.  This method is invoked
-     * upon each call to a non-waiting {@link ConditionObject} method.
-     * (Waiting methods instead invoke {@link #release}.)
-     *
-     * <p>The default implementation throws {@link
-     * UnsupportedOperationException}. This method is invoked
-     * internally only within {@link ConditionObject} methods, so need
-     * not be defined if conditions are not used.
-     *
-     * @return {@code true} if synchronization is held exclusively;
-     *         {@code false} otherwise
-     * @throws UnsupportedOperationException if conditions are not supported
+     * 是否被独占持有
      */
     protected boolean isHeldExclusively() {
         throw new UnsupportedOperationException();
@@ -1420,28 +1408,26 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
-     * Transfers a node from a condition queue onto sync queue.
-     * Returns true if successful.
-     * @param node the node
-     * @return true if successfully transferred (else the node was
-     * cancelled before signal)
+     * 把节点插入到同步队列并唤醒
+     * （把节点的 waitStatus 从 CONDITION 改成 0，插入同步队列尾部，然后确保前驱会唤醒它（否则直接叫醒它重新同步））。
      */
     final boolean transferForSignal(Node node) {
-        /*
-         * If cannot change waitStatus, the node has been cancelled.
-         */
+
+        // 第一步：CAS 抢状态
+        // CAS 成功 → 说明是 signal 赢了，继续转移。
+        // CAS 失败 → 说明节点已经被中断路径抢先处理了（或者节点被取消了），signal 不用管了，返回 false。
         if (!compareAndSetWaitStatus(node, Node.CONDITION, 0))
             return false;
 
-        /*
-         * Splice onto queue and try to set waitStatus of predecessor to
-         * indicate that thread is (probably) waiting. If cancelled or
-         * attempt to set waitStatus fails, wake up to resync (in which
-         * case the waitStatus can be transiently and harmlessly wrong).
-         */
-        Node p = enq(node);
-        int ws = p.waitStatus;
-        if (ws > 0 || !compareAndSetWaitStatus(p, ws, Node.SIGNAL))
+        // 第二步：插入同步队列
+        Node p = enq(node); // 它返回的是 node 的前驱节点 p（不是 node 自己！）。
+        // 第三步：确保前驱会"负责"唤醒自己
+        int ws = p.waitStatus; // 获取前驱节点状态
+        // 情况 A：前驱是 CANCELLED（ws > 0）：前驱已经被取消了，它不会来唤醒你。所以直接 unpark 自己，
+        // 情况 B：CAS 把前驱改成SIGNAL失败： 修改失败 可能是前驱刚好被取消，或者并发修改。保守起见，直接 unpark。
+        // 情况 C：CAS 成功（前驱变成了 SIGNAL）：一切正常，前驱承诺"我释放锁时会唤醒你"。此时不调用 unpark，让节点安心在同步队列里等。
+        if (ws > 0 ||
+                !compareAndSetWaitStatus(p, ws, Node.SIGNAL))
             LockSupport.unpark(node.thread);
         return true;
     }
@@ -1585,13 +1571,12 @@ public abstract class AbstractQueuedSynchronizer
      */
     public class ConditionObject implements Condition, java.io.Serializable {
         private static final long serialVersionUID = 1173984872572414699L;
-        /** First node of condition queue. */
+        /**  条件队列 头节点 */
         private transient Node firstWaiter;
-        /** Last node of condition queue. */
+        /** 条件队列 尾节点 */
         private transient Node lastWaiter;
-
         /**
-         * Creates a new {@code ConditionObject} instance.
+         * 构造器源码
          */
         public ConditionObject() { }
 
@@ -1623,31 +1608,35 @@ public abstract class AbstractQueuedSynchronizer
 
 
         /**
-         * Removes and transfers nodes until hit non-cancelled one or
-         * null. Split out from signal in part to encourage compilers
-         * to inline the case of no waiters.
-         * @param first (non-null) the first node on condition queue
+         * 唤醒一个有效节点（清除条件队列转移到同步队列，并唤醒）
          */
         private void doSignal(Node first) {
             do {
+                // firstWaiter = first.nextWaiter ： 把 firstWaiter 指向下一个节点（相当于把当前节点从队列头部移除）
+                // 如果下一个（first.nextWaiter）是 null ：说明当前节点是队列里最后一个，
+                //   firstWaiter 被设为 null，同时 lastWaiter 也置为 null，队列彻底清空。
                 if ( (firstWaiter = first.nextWaiter) == null)
                     lastWaiter = null;
-                first.nextWaiter = null;
+                first.nextWaiter = null; // 断开当前节点与条件队列的链接 （帮助 GC 回收（断开引用））
             } while (!transferForSignal(first) &&
                      (first = firstWaiter) != null);
+            // 如果 transferForSignal(first) 成功 → ! 为 false → 短路 → 循环结束
+            // 如果 失败 → ! 为 true → 继续判断右边 → 把 first 更新为 firstWaiter（下一个节点）→ 如果还有节点就继续循环，没节点了也结束
         }
 
+
         /**
-         * Removes and transfers all nodes.
-         * @param first (non-null) the first node on condition queue
+         * 把条件队列里的节点一个不剩地全部转移到同步队列（条件队列数据会清除）。
+         * @param first
          */
         private void doSignalAll(Node first) {
+            // 第一步：清空条件队列的引用
             lastWaiter = firstWaiter = null;
             do {
-                Node next = first.nextWaiter;
-                first.nextWaiter = null;
-                transferForSignal(first);
-                first = next;
+                Node next = first.nextWaiter; // ① 保存下一个节点
+                first.nextWaiter = null; // ② 断开当前节点与条件队列的链接 （帮助 GC 回收（断开引用））
+                transferForSignal(first); // ③ 将当前节点转移到同步队列并唤醒
+                first = next; // ④ 移动到下一个
             } while (first != null);
         }
 
@@ -1681,35 +1670,27 @@ public abstract class AbstractQueuedSynchronizer
             }
         }
 
-        // public methods
-
         /**
-         * Moves the longest-waiting thread, if one exists, from the
-         * wait queue for this condition to the wait queue for the
-         * owning lock.
-         *
-         * @throws IllegalMonitorStateException if {@link #isHeldExclusively}
-         *         returns {@code false}
+         * 唤醒一个在等待队列有效的节点
          */
         public final void signal() {
-            if (!isHeldExclusively())
-                throw new IllegalMonitorStateException();
-            Node first = firstWaiter;
+            // 第一步：权限检查
+            if (!isHeldExclusively()) // 确认当前线程是锁的持有者。
+                throw new IllegalMonitorStateException(); // 如果不持有锁就调用，直接抛异常。
+            Node first = firstWaiter; // 第二步：拿到条件队列的头节点
             if (first != null)
-                doSignal(first);
+                doSignal(first); // ← 只转移一个
         }
 
         /**
-         * Moves all threads from the wait queue for this condition to
-         * the wait queue for the owning lock.
-         *
-         * @throws IllegalMonitorStateException if {@link #isHeldExclusively}
-         *         returns {@code false}
+         * 唤醒所有拥有锁的等待队列
          */
         public final void signalAll() {
-            if (!isHeldExclusively())
-                throw new IllegalMonitorStateException();
-            Node first = firstWaiter;
+            // 第一步：权限检查
+            if (!isHeldExclusively()) // 确认当前线程是锁的持有者。
+                throw new IllegalMonitorStateException(); // 如果不持有锁就调用，直接抛异常。
+            Node first = firstWaiter; // 第二步：拿到条件队列的头节点
+            // 第三步：有等待者就全部转移
             if (first != null)
                 doSignalAll(first);
         }
