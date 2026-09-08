@@ -1707,15 +1707,21 @@ public abstract class AbstractQueuedSynchronizer
          * </ol>
          */
         public final void awaitUninterruptibly() {
+            // 1. 入条件队列 + 释放锁
             Node node = addConditionWaiter();
             int savedState = fullyRelease(node);
             boolean interrupted = false;
-            while (!isOnSyncQueue(node)) {
+            // 2. 死等 signal，中断只记标记
+            while (!isOnSyncQueue(node)) { // 只有发生signal，才能跳出死循环。
+                // 中断在这里的作用仅仅是"把线程叫醒一次"，
+                // 但醒来后发现 isOnSyncQueue(node) 还是 false（因为没人 signal），继续 park() 睡。中断无法让它提前退出循环。
                 LockSupport.park(this);
                 if (Thread.interrupted())
                     interrupted = true;
             }
-            if (acquireQueued(node, savedState) || interrupted)
+            // 3. 重新抢锁 + 合并中断标记
+            if (acquireQueued(node, savedState) ||  // 在同步队列排队抢锁时被中断
+                    interrupted) // 在条件队列等 signal 时被中断
                 selfInterrupt();
         }
 
@@ -1795,44 +1801,36 @@ public abstract class AbstractQueuedSynchronizer
 
 
         /**
-         * Implements timed condition wait.
-         * <ol>
-         * <li> If current thread is interrupted, throw InterruptedException.
-         * <li> Save lock state returned by {@link #getState}.
-         * <li> Invoke {@link #release} with saved state as argument,
-         *      throwing IllegalMonitorStateException if it fails.
-         * <li> Block until signalled, interrupted, or timed out.
-         * <li> Reacquire by invoking specialized version of
-         *      {@link #acquire} with saved state as argument.
-         * <li> If interrupted while blocked in step 4, throw InterruptedException.
-         * </ol>
+         * await() + 超时自动放弃
          */
         public final long awaitNanos(long nanosTimeout)
                 throws InterruptedException {
+            // 1. 入口检查 + 入队 + 释放锁
             if (Thread.interrupted())
                 throw new InterruptedException();
             Node node = addConditionWaiter();
             int savedState = fullyRelease(node);
-            final long deadline = System.nanoTime() + nanosTimeout;
+            final long deadline = System.nanoTime() + nanosTimeout; // 用来算剩余时间
             int interruptMode = 0;
             while (!isOnSyncQueue(node)) {
-                if (nanosTimeout <= 0L) {
-                    transferAfterCancelledWait(node);
+                if (nanosTimeout <= 0L) { // ① 超时
+                    transferAfterCancelledWait(node); // 时间到了，节点还在条件队列里 → 自己把自己转移到同步队列
                     break;
                 }
-                if (nanosTimeout >= spinForTimeoutThreshold)
+                // 当剩余时间 小于 spinForTimeoutThreshold（默认 1000 纳秒） 时，不调用 parkNanos，而是直接自旋空转。
+                if (nanosTimeout >= spinForTimeoutThreshold) // // ② 自旋 or park
                     LockSupport.parkNanos(this, nanosTimeout);
                 if ((interruptMode = checkInterruptWhileWaiting(node)) != 0)
                     break;
-                nanosTimeout = deadline - System.nanoTime();
+                nanosTimeout = deadline - System.nanoTime(); // 重新算剩余时间
             }
-            if (acquireQueued(node, savedState) && interruptMode != THROW_IE)
+            if (acquireQueued(node, savedState) && interruptMode != THROW_IE) // 5. 抢锁 + 中断模式合并
                 interruptMode = REINTERRUPT;
             if (node.nextWaiter != null)
-                unlinkCancelledWaiters();
+                unlinkCancelledWaiters(); // 6. 清理
             if (interruptMode != 0)
-                reportInterruptAfterWait(interruptMode);
-            return deadline - System.nanoTime();
+                reportInterruptAfterWait(interruptMode); // 7. 报告中断
+            return deadline - System.nanoTime(); // 返回 正数：剩这么多时间；负数：超了多少。
         }
 
         /**
@@ -1851,7 +1849,7 @@ public abstract class AbstractQueuedSynchronizer
          */
         public final boolean awaitUntil(Date deadline)
                 throws InterruptedException {
-            long abstime = deadline.getTime();
+            long abstime = deadline.getTime(); // 绝对时间，毫秒
             if (Thread.interrupted())
                 throw new InterruptedException();
             Node node = addConditionWaiter();
@@ -1859,11 +1857,11 @@ public abstract class AbstractQueuedSynchronizer
             boolean timedout = false;
             int interruptMode = 0;
             while (!isOnSyncQueue(node)) {
-                if (System.currentTimeMillis() > abstime) {
+                if (System.currentTimeMillis() > abstime) { // ← 到了指定时间点
                     timedout = transferAfterCancelledWait(node);
                     break;
                 }
-                LockSupport.parkUntil(this, abstime);
+                LockSupport.parkUntil(this, abstime); // ← 等到指定时间点
                 if ((interruptMode = checkInterruptWhileWaiting(node)) != 0)
                     break;
             }
@@ -1902,7 +1900,7 @@ public abstract class AbstractQueuedSynchronizer
             int interruptMode = 0;
             while (!isOnSyncQueue(node)) {
                 if (nanosTimeout <= 0L) {
-                    timedout = transferAfterCancelledWait(node);
+                    timedout = transferAfterCancelledWait(node); // ← 关键差异
                     break;
                 }
                 if (nanosTimeout >= spinForTimeoutThreshold)
