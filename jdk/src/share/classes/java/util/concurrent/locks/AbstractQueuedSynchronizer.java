@@ -826,25 +826,26 @@ public abstract class AbstractQueuedSynchronizer
      */
     private void doAcquireSharedInterruptibly(int arg)
         throws InterruptedException {
-        final Node node = addWaiter(Node.SHARED);
-        boolean failed = true;
+        final Node node = addWaiter(Node.SHARED); // 将 共享 节点加入到 同步队列 对尾
+        boolean failed = true;  // 标记是否成功拿到资源，默认认为获取资源是失败的
         try {
             for (;;) {
-                final Node p = node.predecessor();
-                if (p == head) {
-                    int r = tryAcquireShared(arg);
-                    if (r >= 0) {
-                        setHeadAndPropagate(node, r);
-                        p.next = null; // help GC
-                        failed = false;
+                final Node p = node.predecessor(); // 获取我前面的节点
+                if (p == head) { // 情况一：看我前面 是 头节点
+                    int r = tryAcquireShared(arg); // 尝试获取共享资源
+                    if (r >= 0) { // 如果 r>=0 表示获取共享资源成功。
+                        setHeadAndPropagate(node, r); //自己上位成为新 head；判断是否需要"传播唤醒"，如果需要，调用 doReleaseShared() 唤醒后继
+                        p.next = null; // 原来前节点废弃（方便JVM对头结点进行Gc）
+                        failed = false; // 标记已经获取到资源
                         return;
                     }
                 }
+                // 与doAcquireShared的操作类似。这里中断的话，抛异常退出
                 if (shouldParkAfterFailedAcquire(p, node) &&
                     parkAndCheckInterrupt())
                     throw new InterruptedException();
             }
-        } finally {
+        } finally { // 兜底保护
             if (failed)
                 cancelAcquire(node);
         }
@@ -1033,23 +1034,16 @@ public abstract class AbstractQueuedSynchronizer
 
 
     /**
-     * Acquires in shared mode, aborting if interrupted.  Implemented
-     * by first checking interrupt status, then invoking at least once
-     * {@link #tryAcquireShared}, returning on success.  Otherwise the
-     * thread is queued, possibly repeatedly blocking and unblocking,
-     * invoking {@link #tryAcquireShared} until success or the thread
-     * is interrupted.
-     * @param arg the acquire argument.
-     * This value is conveyed to {@link #tryAcquireShared} but is
-     * otherwise uninterpreted and can represent anything
-     * you like.
-     * @throws InterruptedException if the current thread is interrupted
+     * 以共享模式获取资源，如果中断则中止
      */
     public final void acquireSharedInterruptibly(int arg)
             throws InterruptedException {
+        // 线程中断，抛出异常
         if (Thread.interrupted())
             throw new InterruptedException();
+        // 尝试获取资源。返回正数，代表获取成功；返回负数，代表失败。
         if (tryAcquireShared(arg) < 0)
+            // 没有获取到资源，添加到同步队列，自旋尝试再次获取资源
             doAcquireSharedInterruptibly(arg);
     }
 

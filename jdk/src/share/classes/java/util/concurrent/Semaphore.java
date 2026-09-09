@@ -174,22 +174,33 @@ public class Semaphore implements java.io.Serializable {
             return getState();
         }
 
+        // 非公平锁 获取信号量
         final int nonfairTryAcquireShared(int acquires) {
+            // 自旋
             for (;;) {
+                // 获取Semaphore中可用的信号量数
                 int available = getState();
+                // 当前可用信号量数 - acquires
                 int remaining = available - acquires;
+                // 可用信号量数不足 或 CAS操作获取信号量失败，返回  当前可用信号量数 - acquires
                 if (remaining < 0 ||
-                    compareAndSetState(available, remaining))
+                        compareAndSetState(available, remaining))
                     return remaining;
             }
         }
 
+        // 尝试归还信号量
         protected final boolean tryReleaseShared(int releases) {
+            // 自旋
             for (;;) {
+                // 获取Semaphore中可用的信号量数
                 int current = getState();
+                // 当前可用信号量数 + 归还的信号量 releases
                 int next = current + releases;
-                if (next < current) // overflow
+                // 超出了int的最大值，变成了负数
+                if (next < current)
                     throw new Error("Maximum permit count exceeded");
+                // cas操作，将信号量归还给Semaphore
                 if (compareAndSetState(current, next))
                     return true;
             }
@@ -225,6 +236,7 @@ public class Semaphore implements java.io.Serializable {
             super(permits);
         }
 
+        // 非公平锁  获取信号量
         protected int tryAcquireShared(int acquires) {
             return nonfairTryAcquireShared(acquires);
         }
@@ -241,41 +253,28 @@ public class Semaphore implements java.io.Serializable {
         }
 
         protected int tryAcquireShared(int acquires) {
+            // 自旋
             for (;;) {
+                // 判断同步队列中是否有挂起的线程
                 if (hasQueuedPredecessors())
-                    return -1;
-                int available = getState();
-                int remaining = available - acquires;
+                    return -1; // 有排队的线程，返回-1 (根据返回的-1，将当前线程添加到同步队列中)
+                // 尝试获取Semaphore的信号量，下面与非公平锁逻辑相同
+                int available = getState(); // 获取Semaphore中可用的信号量数
+                int remaining = available - acquires; // 当前可用信号量数 - acquires
+                // 可用信号量数不足 或 CAS操作获取信号量失败，返回 当前可用信号量数 - acquires
                 if (remaining < 0 ||
-                    compareAndSetState(available, remaining))
+                        compareAndSetState(available, remaining))
                     return remaining;
             }
         }
     }
 
-    /**
-     * Creates a {@code Semaphore} with the given number of
-     * permits and nonfair fairness setting.
-     *
-     * @param permits the initial number of permits available.
-     *        This value may be negative, in which case releases
-     *        must occur before any acquires will be granted.
-     */
+    // 默认使用非公平锁
     public Semaphore(int permits) {
         sync = new NonfairSync(permits);
     }
 
-    /**
-     * Creates a {@code Semaphore} with the given number of
-     * permits and the given fairness setting.
-     *
-     * @param permits the initial number of permits available.
-     *        This value may be negative, in which case releases
-     *        must occur before any acquires will be granted.
-     * @param fair {@code true} if this semaphore will guarantee
-     *        first-in first-out granting of permits under contention,
-     *        else {@code false}
-     */
+     // 根据 fair 布尔值 选择使用公平锁还是非公平锁
     public Semaphore(int permits, boolean fair) {
         sync = fair ? new FairSync(permits) : new NonfairSync(permits);
     }
@@ -309,6 +308,7 @@ public class Semaphore implements java.io.Serializable {
      * @throws InterruptedException if the current thread is interrupted
      */
     public void acquire() throws InterruptedException {
+        // 获取 Semaphore 信号量
         sync.acquireSharedInterruptibly(1);
     }
 
@@ -410,17 +410,7 @@ public class Semaphore implements java.io.Serializable {
     }
 
     /**
-     * Releases a permit, returning it to the semaphore.
-     *
-     * <p>Releases a permit, increasing the number of available permits by
-     * one.  If any threads are trying to acquire a permit, then one is
-     * selected and given the permit that was just released.  That thread
-     * is (re)enabled for thread scheduling purposes.
-     *
-     * <p>There is no requirement that a thread that releases a permit must
-     * have acquired that permit by calling {@link #acquire}.
-     * Correct usage of a semaphore is established by programming convention
-     * in the application.
+     * 归还Semaphore的信号量
      */
     public void release() {
         sync.releaseShared(1);
