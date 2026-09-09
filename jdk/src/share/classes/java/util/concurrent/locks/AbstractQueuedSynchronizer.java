@@ -393,36 +393,31 @@ public abstract class AbstractQueuedSynchronizer
      * 等待队列的尾结点
      */
     private transient volatile Node tail;
+
     /**
-     * 同步状态
+     * 状态值（整个同步器的核心状态）
      */
-    private volatile int state;
+    private volatile int state; // volatile 保证可见性，CAS 保证原子性
+
     /**
-     * state的getter方法
+     *  返回同步状态的当前值
      */
     protected final int getState() {
         return state;
     }
+
     /**
-     * state的setter方法
+     * 设置同步状态的值
      */
     protected final void setState(int newState) {
         state = newState;
     }
 
     /**
-     * Atomically sets synchronization state to the given updated
-     * value if the current state value equals the expected value.
-     * This operation has memory semantics of a {@code volatile} read
-     * and write.
-     *
-     * @param expect the expected value
-     * @param update the new value
-     * @return {@code true} if successful. False return indicates that the actual
-     *         value was not equal to the expected value.
+     * 原子地（CAS操作）修改状态
      */
     protected final boolean compareAndSetState(int expect, int update) {
-        // See below for intrinsics setup to support this
+        // this：当前 AQS 对象 ；stateOffset：state 字段在对象内存中的偏移量；expect：期望的当前值；update：要设的新值
         return unsafe.compareAndSwapInt(this, stateOffset, expect, update);
     }
 
