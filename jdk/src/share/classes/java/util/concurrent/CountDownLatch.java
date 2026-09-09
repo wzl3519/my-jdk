@@ -154,34 +154,41 @@ import java.util.concurrent.locks.AbstractQueuedSynchronizer;
  * @author Doug Lea
  */
 public class CountDownLatch {
-    /**
-     * Synchronization control For CountDownLatch.
-     * Uses AQS state to represent count.
-     */
+
+    // 抽象队列同步器
     private static final class Sync extends AbstractQueuedSynchronizer {
         private static final long serialVersionUID = 4982264981922014374L;
 
+        // 将 count 赋值给 AQS 的 state 属性
         Sync(int count) {
             setState(count);
         }
-
+        // 获取 AQS 的 state 属性
         int getCount() {
             return getState();
         }
 
+        // 获取共享锁
         protected int tryAcquireShared(int acquires) {
+            // 判断所有线程是否都执行完成， 1 -> 全部执行完成；-1 -> 仍有线程在执行
             return (getState() == 0) ? 1 : -1;
         }
 
+        // 释放锁
         protected boolean tryReleaseShared(int releases) {
-            // Decrement count; signal when transition to zero
+            // 自旋
             for (;;) {
+                // 获取当前持有锁资源的线程数
                 int c = getState();
+                // 锁资源已经释放完毕，再次进入，直接返回false，什么也不做
                 if (c == 0)
                     return false;
+                //  state - 1
                 int nextc = c-1;
+                // CAS 赋值操作
                 if (compareAndSetState(c, nextc))
-                    return nextc == 0;
+                    // countDown() 唤醒等待队列中的其他挂起线程
+                    return nextc == 0; // 最后一个线程执行完，state = 0（没有线程持有锁资源） ，返回true。
             }
         }
     }
@@ -196,38 +203,16 @@ public class CountDownLatch {
      * @throws IllegalArgumentException if {@code count} is negative
      */
     public CountDownLatch(int count) {
+        // count 合法校验
         if (count < 0) throw new IllegalArgumentException("count < 0");
+        // 初始化sync属性
         this.sync = new Sync(count);
     }
 
-    /**
-     * Causes the current thread to wait until the latch has counted down to
-     * zero, unless the thread is {@linkplain Thread#interrupt interrupted}.
-     *
-     * <p>If the current count is zero then this method returns immediately.
-     *
-     * <p>If the current count is greater than zero then the current
-     * thread becomes disabled for thread scheduling purposes and lies
-     * dormant until one of two things happen:
-     * <ul>
-     * <li>The count reaches zero due to invocations of the
-     * {@link #countDown} method; or
-     * <li>Some other thread {@linkplain Thread#interrupt interrupts}
-     * the current thread.
-     * </ul>
-     *
-     * <p>If the current thread:
-     * <ul>
-     * <li>has its interrupted status set on entry to this method; or
-     * <li>is {@linkplain Thread#interrupt interrupted} while waiting,
-     * </ul>
-     * then {@link InterruptedException} is thrown and the current thread's
-     * interrupted status is cleared.
-     *
-     * @throws InterruptedException if the current thread is interrupted
-     *         while waiting
-     */
+
+    // AQS的state属性不为0， 阻塞
     public void await() throws InterruptedException {
+        //  获取共享锁并允许中断
         sync.acquireSharedInterruptibly(1);
     }
 
@@ -277,16 +262,7 @@ public class CountDownLatch {
         return sync.tryAcquireSharedNanos(1, unit.toNanos(timeout));
     }
 
-    /**
-     * Decrements the count of the latch, releasing all waiting threads if
-     * the count reaches zero.
-     *
-     * <p>If the current count is greater than zero then it is decremented.
-     * If the new count is zero then all waiting threads are re-enabled for
-     * thread scheduling purposes.
-     *
-     * <p>If the current count equals zero then nothing happens.
-     */
+    // countDown方法, 实际上调用了AQS的释放共享锁操作
     public void countDown() {
         sync.releaseShared(1);
     }
