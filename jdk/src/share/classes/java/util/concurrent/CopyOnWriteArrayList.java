@@ -81,10 +81,11 @@ public class CopyOnWriteArrayList<E>
     implements List<E>, RandomAccess, Cloneable, java.io.Serializable {
     private static final long serialVersionUID = 8673264195747942595L;
 
-    /** The lock protecting all mutators */
+    /** 可重入锁独占锁 */
     transient final ReentrantLock lock = new ReentrantLock();
 
-    /** The array, accessed only via getArray/setArray. */
+    /** 存储数据的底层数组 */
+    /** 主要注意的是 volatile 修饰的数组 */
     private volatile transient Object[] array;
 
     /**
@@ -381,10 +382,7 @@ public class CopyOnWriteArrayList<E>
     }
 
     /**
-     * Replaces the element at the specified position in this list with the
-     * specified element.
-     *
-     * @throws IndexOutOfBoundsException {@inheritDoc}
+     * 将此列表中指定位置的元素替换为指定元素
      */
     public E set(int index, E element) {
         final ReentrantLock lock = this.lock;
@@ -416,49 +414,46 @@ public class CopyOnWriteArrayList<E>
      */
     public boolean add(E e) {
         final ReentrantLock lock = this.lock;
-        lock.lock();
+        lock.lock(); // 加锁
         try {
-            Object[] elements = getArray();
-            int len = elements.length;
+            Object[] elements = getArray(); // 获取底部数组
+            int len = elements.length; // 数组的长度
+            //拷贝一个新的数组，长度为原数组长度+1。
             Object[] newElements = Arrays.copyOf(elements, len + 1);
-            newElements[len] = e;
-            setArray(newElements);
+            newElements[len] = e; // 新数组最后一个位置插入的元素e
+            setArray(newElements); // 修改数组引用 （新数组替换旧数组）
             return true;
         } finally {
-            lock.unlock();
+            lock.unlock(); // 释放锁
         }
     }
 
     /**
-     * Inserts the specified element at the specified position in this
-     * list. Shifts the element currently at that position (if any) and
-     * any subsequent elements to the right (adds one to their indices).
-     *
-     * @throws IndexOutOfBoundsException {@inheritDoc}
+     * 在此指定位置插入指定元素
      */
     public void add(int index, E element) {
         final ReentrantLock lock = this.lock;
-        lock.lock();
+        lock.lock(); // 加锁
         try {
-            Object[] elements = getArray();
-            int len = elements.length;
-            if (index > len || index < 0)
+            Object[] elements = getArray(); // 获取底部数组
+            int len = elements.length;  // 数组的长度
+            if (index > len || index < 0) // 检查插入位置是否合法
                 throw new IndexOutOfBoundsException("Index: "+index+
                                                     ", Size: "+len);
             Object[] newElements;
-            int numMoved = len - index;
+            int numMoved = len - index; // 计算需要移动的元素数
             if (numMoved == 0)
-                newElements = Arrays.copyOf(elements, len + 1);
-            else {
-                newElements = new Object[len + 1];
-                System.arraycopy(elements, 0, newElements, 0, index);
-                System.arraycopy(elements, index, newElements, index + 1,
+                newElements = Arrays.copyOf(elements, len + 1); // 不需要挪任何元素，在末尾插入
+            else { // （插入点不在末尾，需要"腾位置"。）
+                newElements = new Object[len + 1]; // 创建新数组，分两段复制
+                System.arraycopy(elements, 0, newElements, 0, index); // 第一次 copy —— 拷贝插入点左边的元素
+                System.arraycopy(elements, index, newElements, index + 1, // 第二次 copy —— 把插入点右边的元素整体往后挪一位
                                  numMoved);
             }
-            newElements[index] = element;
-            setArray(newElements);
+            newElements[index] = element; // 把新元素放到腾出来的位置
+            setArray(newElements); // 新数组 替换 旧数组
         } finally {
-            lock.unlock();
+            lock.unlock(); // 释放锁
         }
     }
 
@@ -578,31 +573,29 @@ public class CopyOnWriteArrayList<E>
     }
 
     /**
-     * Appends the element, if not present.
-     *
-     * @param e element to be added to this list, if absent
-     * @return <tt>true</tt> if the element was added
+     * 如果元素不存在，则附加该元素。
      */
     public boolean addIfAbsent(E e) {
         final ReentrantLock lock = this.lock;
-        lock.lock();
+        lock.lock(); // 1. 加锁
         try {
-            // Copy while checking if already present.
-            // This wins in the most common case where it is not present
+            // 2. 获取旧数组 + 创建新数组
             Object[] elements = getArray();
             int len = elements.length;
             Object[] newElements = new Object[len + 1];
+            // 3. 遍历旧数组——边检查边拷贝
             for (int i = 0; i < len; ++i) {
-                if (eq(e, elements[i]))
-                    return false; // exit, throwing away copy
+                if (eq(e, elements[i])) // 情况 A：找到了相等的元素
+                    return false; // 元素已经存在，不需要添加。直接返回 false。
                 else
-                    newElements[i] = elements[i];
+                    newElements[i] = elements[i]; // 情况 B：没找到相等的
             }
+            // 4. 遍历完没找到——追加新元素
             newElements[len] = e;
             setArray(newElements);
             return true;
         } finally {
-            lock.unlock();
+            lock.unlock(); // 5. 解锁
         }
     }
 

@@ -84,9 +84,7 @@ package java.util;
  * @since   1.2
  */
 
-public class HashSet<E>
-    extends AbstractSet<E>
-    implements Set<E>, Cloneable, java.io.Serializable
+public class HashSet<E> extends AbstractSet<E>  implements Set<E>, Cloneable, java.io.Serializable
 {
     static final long serialVersionUID = -5024744406713321676L;
 
@@ -96,21 +94,14 @@ public class HashSet<E>
     private static final Object PRESENT = new Object();
 
     /**
-     * Constructs a new, empty set; the backing <tt>HashMap</tt> instance has
-     * default initial capacity (16) and load factor (0.75).
+     * 构造一个新的空集。默认初始容量（16）和载荷系数（0.75）
      */
     public HashSet() {
         map = new HashMap<>();
     }
 
     /**
-     * Constructs a new set containing the elements in the specified
-     * collection.  The <tt>HashMap</tt> is created with default load factor
-     * (0.75) and an initial capacity sufficient to contain the elements in
-     * the specified collection.
-     *
-     * @param c the collection whose elements are to be placed into this set
-     * @throws NullPointerException if the specified collection is null
+     * 把一个已有的集合（比如 List、Set、数组转成的集合等）传进去，构造出一个新的 HashSet，里面装着同样的元素（自动去重）。
      */
     public HashSet(Collection<? extends E> c) {
         map = new HashMap<>(Math.max((int) (c.size()/.75f) + 1, 16));
@@ -118,25 +109,14 @@ public class HashSet<E>
     }
 
     /**
-     * Constructs a new, empty set; the backing <tt>HashMap</tt> instance has
-     * the specified initial capacity and the specified load factor.
-     *
-     * @param      initialCapacity   the initial capacity of the hash map
-     * @param      loadFactor        the load factor of the hash map
-     * @throws     IllegalArgumentException if the initial capacity is less
-     *             than zero, or if the load factor is nonpositive
+     * 构造一个新的空集。指定的初始容量和指定载荷系数
      */
     public HashSet(int initialCapacity, float loadFactor) {
         map = new HashMap<>(initialCapacity, loadFactor);
     }
 
     /**
-     * Constructs a new, empty set; the backing <tt>HashMap</tt> instance has
-     * the specified initial capacity and default load factor (0.75).
-     *
-     * @param      initialCapacity   the initial capacity of the hash table
-     * @throws     IllegalArgumentException if the initial capacity is less
-     *             than zero
+     * 构造一个新的空集。指定的初始容量和默认载荷系数（0.75）。
      */
     public HashSet(int initialCapacity) {
         map = new HashMap<>(initialCapacity);
@@ -202,16 +182,10 @@ public class HashSet<E>
     }
 
     /**
-     * Adds the specified element to this set if it is not already present.
-     * More formally, adds the specified element <tt>e</tt> to this set if
-     * this set contains no element <tt>e2</tt> such that
-     * <tt>(e==null&nbsp;?&nbsp;e2==null&nbsp;:&nbsp;e.equals(e2))</tt>.
-     * If this set already contains the element, the call leaves the set
-     * unchanged and returns <tt>false</tt>.
-     *
-     * @param e element to be added to this set
-     * @return <tt>true</tt> if this set did not already contain the specified
-     * element
+     * 添加元素
+     * 不存在 -> 添加 -> true；已存在 ->不改 -> false
+     * 元素：允许 null；
+     * 无序；线程不安全；
      */
     public boolean add(E e) {
         return map.put(e, PRESENT)==null;

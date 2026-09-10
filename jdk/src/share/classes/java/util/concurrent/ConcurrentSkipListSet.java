@@ -213,19 +213,11 @@ public class ConcurrentSkipListSet<E>
         return m.containsKey(o);
     }
 
-    /**
-     * Adds the specified element to this set if it is not already present.
-     * More formally, adds the specified element <tt>e</tt> to this set if
-     * the set contains no element <tt>e2</tt> such that <tt>e.equals(e2)</tt>.
-     * If this set already contains the element, the call leaves the set
-     * unchanged and returns <tt>false</tt>.
-     *
-     * @param e element to be added to this set
-     * @return <tt>true</tt> if this set did not already contain the
-     *         specified element
-     * @throws ClassCastException if <tt>e</tt> cannot be compared
-     *         with the elements currently in this set
-     * @throws NullPointerException if the specified element is null
+     /**
+     * 存放元素 如 add("A");
+     * 元素不存在就添加并返回 true，已存在就返回 false 不改集合；
+     * 元素的类型必须一致（因为需要互相比较）
+     * 不允许元素为null。
      */
     public boolean add(E e) {
         return m.putIfAbsent(e, Boolean.TRUE) == null;

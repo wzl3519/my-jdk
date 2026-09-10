@@ -649,17 +649,15 @@ public class ConcurrentSkipListMap<K,V> extends AbstractMap<K,V>
     }
 
     /**
-     * If using comparator, return a ComparableUsingComparator, else
-     * cast key as Comparable, which may cause ClassCastException,
-     * which is propagated back to caller.
+     * 统一 key 的比较方式
      */
     private Comparable<? super K> comparable(Object key)
             throws ClassCastException {
-        if (key == null)
+        if (key == null) // key 为 null 直接抛 NullPointerException。
             throw new NullPointerException();
-        if (comparator != null)
+        if (comparator != null) // 2. 有自定义 Comparator 的情况
             return new ComparableUsingComparator<K>((K)key, comparator);
-        else
+        else // 3. 没有自定义 Comparator 的情况,就要求 key 自己实现 Comparable 接口，直接强转。
             return (Comparable<? super K>)key;
     }
 
@@ -835,54 +833,55 @@ public class ConcurrentSkipListMap<K,V> extends AbstractMap<K,V>
     }
 
     /* ---------------- Insertion -------------- */
-
     /**
-     * Main insertion method.  Adds element if not present, or
-     * replaces value if present and onlyIfAbsent is false.
-     * @param kkey the key
-     * @param value  the value that must be associated with key
-     * @param onlyIfAbsent if should not insert if already present
-     * @return the old value, or null if newly inserted
+     * key 不存在就插入（返回 null），key 存在就看 onlyIfAbsent 决定要不要覆盖（返回旧值）
      */
     private V doPut(K kkey, V value, boolean onlyIfAbsent) {
-        Comparable<? super K> key = comparable(kkey);
-        for (;;) {
-            Node<K,V> b = findPredecessor(key);
+        Comparable<? super K> key = comparable(kkey); // 1. 准备阶段（确保 key 实现了 Comparable，后面要用 compareTo 比较大小来在链表里定位。）
+        for (;;) { // 2. 外层无限循环（重试入口）
+            // 3. 找前驱节点
+            Node<K,V> b = findPredecessor(key); // 从最高层索引开始，逐层向下，找到 base level 上 key 应该插入位置的前一个节点 b。
             Node<K,V> n = b.next;
-            for (;;) {
+            for (;;) { // 4. 内层循环（在 base level 链表里精确定位）
                 if (n != null) {
-                    Node<K,V> f = n.next;
-                    if (n != b.next)               // inconsistent read
+                    Node<K,V> f = n.next; // 后面用来检测一致性
+                    if (n != b.next)  // 6. 一致性检查 （在你拿到 n = b.next 之后、执行到这一行之间，可能有别的线程把 b.next 改成了别的节点）
                         break;
+                    // 7. 检测 n 是否被标记删除
                     Object v = n.value;
-                    if (v == null) {               // n is deleted
-                        n.helpDelete(b, f);
+                    if (v == null) {   // 说明 n 正在被别的线程删除
+                        n.helpDelete(b, f); // 帮助完成删除（把 b.next 直接指向 f，完成物理删除）
                         break;
                     }
-                    if (v == n || b.value == null) // b is deleted
+                    // 8. 检测标记节点 (这两种情况都说明当前链表结构处于并发修改的中间态)
+                    if (v == n ||  // n 是一个标记节点（marker node，删除操作的中间状态，value 指向自身）
+                            b.value == null) // b 已经被逻辑删除了
                         break;
+                    // 9. 比较 key，决定走向
                     int c = key.compareTo(n.key);
-                    if (c > 0) {
+                    if (c > 0) { // 10. 继续往后找 (说明插入位置还在更后面。)
                         b = n;
-                        n = f;
+                        n = f; // 把 b 移到 n，n 移到 f（相当于在 base level 链表里向后滑动一个位置）
                         continue;
                     }
-                    if (c == 0) {
-                        if (onlyIfAbsent || n.casValue(v, value))
+                    if (c == 0) { // 11. 找到相等的 key（更新操作）
+                        if (onlyIfAbsent || // true (key 存在就不改，返回旧值); false (key 存在就覆盖)
+                                n.casValue(v, value))  // 尝试 CAS 把 n.value 从旧值 v 改成新 value
                             return (V)v;
                         else
                             break; // restart if lost race to replace value
                     }
                     // else c < 0; fall through
                 }
-
-                Node<K,V> z = new Node<K,V>(kkey, value, n);
-                if (!b.casNext(n, z))
+                // 13. 创建新节点 + CAS 插入
+                Node<K,V> z = new Node<K,V>(kkey, value, n); // 创建新节点 z，其 next 指向 n（把 z 链到 n 前面）
+                if (!b.casNext(n, z)) // 用 CAS 把 b.next 从 n 改成 z
                     break;         // restart if lost race to append to b
-                int level = randomLevel();
+                // 14. 随机决定索引层级
+                int level = randomLevel(); // 抛硬币决定新节点的索引高度
                 if (level > 0)
-                    insertIndex(z, level);
-                return null;
+                    insertIndex(z, level); // 在索引层里为新节点建立对应的索引节点，链接到各层链表中
+                return null;  // 返回 null
             }
         }
     }
@@ -1627,17 +1626,10 @@ public class ConcurrentSkipListMap<K,V> extends AbstractMap<K,V>
     }
 
     /**
-     * Associates the specified value with the specified key in this map.
-     * If the map previously contained a mapping for the key, the old
-     * value is replaced.
-     *
-     * @param key key with which the specified value is to be associated
-     * @param value value to be associated with the specified key
-     * @return the previous value associated with the specified key, or
-     *         <tt>null</tt> if there was no mapping for the key
-     * @throws ClassCastException if the specified key cannot be compared
-     *         with the keys currently in the map
-     * @throws NullPointerException if the specified key or value is null
+     * 存放键值对。 put(1, "a");
+     * key 存在就覆盖旧值并返回旧值，不存在就新增并返回 null；
+     * key 的类型必须一致（因为需要互相比较）
+     * 不允许 key 或 value 为 null。
      */
     public V put(K key, V value) {
         if (value == null)
@@ -1866,14 +1858,11 @@ public class ConcurrentSkipListMap<K,V> extends AbstractMap<K,V>
 
     /* ------ ConcurrentMap API methods ------ */
 
-    /**
-     * {@inheritDoc}
-     *
-     * @return the previous value associated with the specified key,
-     *         or <tt>null</tt> if there was no mapping for the key
-     * @throws ClassCastException if the specified key cannot be compared
-     *         with the keys currently in the map
-     * @throws NullPointerException if the specified key or value is null
+     /**
+     * 存放键值对。
+     * key 存在返回旧值（不覆盖），不存在就新增并返回 null；
+     * key 的类型必须一致（因为需要互相比较）
+     * 不允许 key 或 value 为 null。
      */
     public V putIfAbsent(K key, V value) {
         if (value == null)
