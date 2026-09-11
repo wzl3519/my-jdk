@@ -133,10 +133,11 @@ public class PriorityBlockingQueue<E> extends AbstractQueue<E>
     private static final int DEFAULT_INITIAL_CAPACITY = 11;
 
     /**
-     * The maximum size of array to allocate.
-     * Some VMs reserve some header words in an array.
-     * Attempts to allocate larger arrays may result in
-     * OutOfMemoryError: Requested array size exceeds VM limit
+     * 能分配的数组的最大大小。
+     *
+     * JVM 对单个对象能分配的最大字节数有限制（通常是 Integer.MAX_VALUE 个字节的寻址空间）
+     *
+     * 但 JVM 在分配时会检查总大小（元素 + 对象头）是否超过限制。预留 8 个位置就是给对象头留一个安全边界。
      */
     private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
 
@@ -151,7 +152,7 @@ public class PriorityBlockingQueue<E> extends AbstractQueue<E>
     private transient Object[] queue;
 
     /**
-     * The number of elements in the priority queue.
+     * 优先级队列中的元素数
      */
     private transient int size;
 
@@ -277,156 +278,162 @@ public class PriorityBlockingQueue<E> extends AbstractQueue<E>
     }
 
     /**
-     * Tries to grow array to accommodate at least one more element
-     * (but normally expand by about 50%), giving up (allowing retry)
-     * on contention (which we expect to be rare). Call only while
-     * holding lock.
+     * 尝试扩容数组，至少能再容纳一个元素。但通常扩容约 50%）。
+     * 如果发生冲突（竞争），就放弃（允许重试）。 （我们预计这种情况很少见）。只能在持有锁的情况下调用。
      *
-     * @param array the heap array
-     * @param oldCap the length of the array
+     * 扩容的痛点：数组复制是 O(n) 的耗时操作，如果持锁复制，所有线程都被阻塞。
+     * 解决方案：减小锁粒度 （释放主锁 → 用 CAS 自旋锁保证只有一个线程分配数组 → 分配完重新获取主锁 → 复制数据）
      */
     private void tryGrow(Object[] array, int oldCap) {
-        lock.unlock(); // must release and then re-acquire main lock
+        lock.unlock(); // 1. 释放主锁
+        //（释放锁后，其他线程可以继续： 1、消费者：take() 仍然可以出队（堆里还有元素） 2、其他生产者：如果容量还没满，仍然可以入队）
         Object[] newArray = null;
+        // 2. CAS 抢"分配权
+        // allocationSpinLock 是一个 volatile int（初始为 0），用作自旋锁（0：没有线程在分配数组；1：有线程正在分配数组）
         if (allocationSpinLock == 0 &&
             UNSAFE.compareAndSwapInt(this, allocationSpinLockOffset,
                                      0, 1)) {
-            try {
+            try { // 3. 计算新容量 （小容量 2x，大容量 1.5x）
                 int newCap = oldCap + ((oldCap < 64) ?
-                                       (oldCap + 2) : // grow faster if small
-                                       (oldCap >> 1));
-                if (newCap - MAX_ARRAY_SIZE > 0) {    // possible overflow
+                                       (oldCap + 2) : // 扩容约 2 倍（小容量时增长更快，减少频繁扩容）
+                                       (oldCap >> 1)); // 扩容1.5 倍（大容量时增长放缓，避免浪费内存）
+                // 4. 溢出检查
+                if (newCap - MAX_ARRAY_SIZE > 0) {  // 新容量溢出了或者超过了最大数组大小
                     int minCap = oldCap + 1;
-                    if (minCap < 0 || minCap > MAX_ARRAY_SIZE)
+                    if (minCap < 0 || minCap > MAX_ARRAY_SIZE) // 已经到顶了
                         throw new OutOfMemoryError();
-                    newCap = MAX_ARRAY_SIZE;
+                    newCap = MAX_ARRAY_SIZE; // 把新容量限制在 MAX_ARRAY_SIZE
                 }
-                if (newCap > oldCap && queue == array)
-                    newArray = new Object[newCap];
+                // 5. 分配新数组（持 CAS 锁，不持主锁）
+                if (newCap > oldCap &&
+                        queue == array) // 释放主锁后，可能有另一个线程已经完成了扩容，queue 已经指向了新的数组。如果是这样，当前线程就不需要再分配了（让 newArray 保持 null）。
+                    newArray = new Object[newCap]; // 分配新数组
             } finally {
-                allocationSpinLock = 0;
+                allocationSpinLock = 0; // 6. 释放自旋锁 （无论成功与否，都释放自旋锁，让其他线程可以继续尝试。）
             }
         }
-        if (newArray == null) // back off if another thread is allocating
-            Thread.yield();
-        lock.lock();
-        if (newArray != null && queue == array) {
-            queue = newArray;
-            System.arraycopy(array, 0, newArray, 0, oldCap);
+        if (newArray == null) // 7. 没抢到分配权的线程：
+            Thread.yield(); // 让出 CPU（避免空自旋浪费资源）
+        lock.lock(); //8. 重新获取主锁 + 完成切换
+        if (newArray != null &&
+                queue == array) { // 再次检查 queue == array（双重检查，防止这期间有别的线程已经切换了）
+            queue = newArray; // 切换 queue 引用到新数组
+            System.arraycopy(array, 0, newArray, 0, oldCap); // 复制旧数据
         }
     }
 
     /**
-     * Mechanics for poll().  Call only while holding lock.
+     * 获取堆顶元素并删除
      */
     private E dequeue() {
-        int n = size - 1;
+        int n = size - 1; // 1. 计算最后一个元素的索引 （堆顶被移除后，用来补位的元素的原位置））
         if (n < 0)
-            return null;
+            return null; // 2. 队列为空检查
         else {
             Object[] array = queue;
-            E result = (E) array[0];
-            E x = (E) array[n];
-            array[n] = null;
+            E result = (E) array[0]; // 3. 取堆顶（返回值） （（最小堆的根节点，优先级最高的元素））
+            E x = (E) array[n]; // 4. 取最后一个元素（用来补位） 【把最后一个元素取出来，稍后放到堆顶再下沉】
+            array[n] = null; // 5. 把最后一个位置置 null （删除最后一个节点）
             Comparator<? super E> cmp = comparator;
             if (cmp == null)
-                siftDownComparable(0, x, array, n);
+                siftDownComparable(0, x, array, n); // 堆化（从上而下）
             else
-                siftDownUsingComparator(0, x, array, n, cmp);
+                siftDownUsingComparator(0, x, array, n, cmp); // 堆化（从上而下）
             size = n;
-            return result;
+            return result; // 返回 原堆顶数据
         }
     }
 
     /**
-     * Inserts item x at position k, maintaining heap invariant by
-     * promoting x up the tree until it is greater than or equal to
-     * its parent, or is the root.
-     *
-     * To simplify and speed up coercions and comparisons. the
-     * Comparable and Comparator versions are separated into different
-     * methods that are otherwise identical. (Similarly for siftDown.)
-     * These methods are static, with heap state as arguments, to
-     * simplify use in light of possible comparator exceptions.
-     *
-     * @param k the position to fill
-     * @param x the item to insert
-     * @param array the heap array
+     * 最小堆 （堆化过程-从下往上）
      */
     private static <T> void siftUpComparable(int k, T x, Object[] array) {
         Comparable<? super T> key = (Comparable<? super T>) x;
+        //2. 循环：只要没到堆顶就继续
         while (k > 0) {
-            int parent = (k - 1) >>> 1;
-            Object e = array[parent];
-            if (key.compareTo((T) e) >= 0)
-                break;
-            array[k] = e;
-            k = parent;
+            int parent = (k - 1) >>> 1; // 3. 计算父节点索引（无符号右移 1 位，等价于 (k - 1) / 2 向下取整。）
+            Object e = array[parent]; // 4. 取父节点元素
+            if (key.compareTo((T) e) >= 0) // 5. 比较优先级（核心判断） （最小堆逻辑）
+                break;  // 新元素比父节点大或相等（优先级更低或相同）
+            array[k] = e; // 6. 父节点下移 【注意：这里没有交换，只是单向移动（比真正的 swap 少一次写入）】
+            k = parent; // 7. 当前位置移到父节点
         }
-        array[k] = key;
+        array[k] = key; // 8. 循环结束，放入最终位置
     }
 
     private static <T> void siftUpUsingComparator(int k, T x, Object[] array,
                                        Comparator<? super T> cmp) {
+        //2. 循环：只要没到堆顶就继续
         while (k > 0) {
-            int parent = (k - 1) >>> 1;
-            Object e = array[parent];
-            if (cmp.compare(x, (T) e) >= 0)
-                break;
-            array[k] = e;
-            k = parent;
+            int parent = (k - 1) >>> 1; // 3. 计算父节点索引（无符号右移 1 位，等价于 (k - 1) / 2 向下取整。）
+            Object e = array[parent]; // 4. 取父节点元素
+            if (cmp.compare(x, (T) e) >= 0) // 5. 比较优先级（核心判断） （最小堆逻辑）
+                break;  // 新元素比父节点大或相等（优先级更低或相同）
+            array[k] = e; // 6. 父节点下移 【注意：这里没有交换，只是单向移动（比真正的 swap 少一次写入）】
+            k = parent; // 7. 当前位置移到父节点
         }
-        array[k] = x;
+        array[k] = x; // 8. 循环结束，放入最终位置
     }
 
+
     /**
-     * Inserts item x at position k, maintaining heap invariant by
-     * demoting x down the tree repeatedly until it is less than or
-     * equal to its children or is a leaf.
-     *
-     * @param k the position to fill
-     * @param x the item to insert
-     * @param array the heap array
-     * @param n heap size
+     *  最小堆 （堆化过程-从上往下）
+     * @param k 起始下沉位置 （0（堆顶））
+     * @param x 要下沉的元素
+     * @param array 堆数组
+     * @param n 当前堆大小（边界）
+     * @param <T>
      */
     private static <T> void siftDownComparable(int k, T x, Object[] array,
                                                int n) {
-        if (n > 0) {
+        if (n > 0) { // 1. 边界检查
             Comparable<? super T> key = (Comparable<? super T>)x;
-            int half = n >>> 1;           // loop while a non-leaf
-            while (k < half) {
-                int child = (k << 1) + 1; // assume left child is least
-                Object c = array[child];
-                int right = child + 1;
-                if (right < n &&
-                    ((Comparable<? super T>) c).compareTo((T) array[right]) > 0)
-                    c = array[child = right];
-                if (key.compareTo((T) c) <= 0)
-                    break;
-                array[k] = c;
-                k = child;
+            int half = n >>> 1;           // 第一个叶子节点的索引
+            // 3. 主循环：找较小的子节点
+            while (k < half) { // 只要当前位置还有子节点，就继续循环。
+                int child = (k << 1) + 1; // 4. 计算左子节点索引
+                Object c = array[child]; // 5. 取左子节点元素
+                int right = child + 1; // 6. 计算右子节点
+                // 7. 比较左右子节点，选较小的
+                if (right < n && // 右子节点存在（没越界）
+                    ((Comparable<? super T>) c).compareTo((T) array[right]) > 0) // 左子节点 > 右子节点 → 右子节点更小
+                    c = array[child = right]; // 准备 和右子节点 替换
+                if (key.compareTo((T) c) <= 0) // 8. 跟父节点比较（核心判断）
+                    break; // 父节点必须 ≤ 子节点 ，结束
+                array[k] = c; // 9. 子节点上移
+                k = child; // 10. 当前位置移到子节点 （继续向下比较，准备下一轮循环）
             }
-            array[k] = key;
+            array[k] = key; // 11. 循环结束，放入最终位置
         }
     }
 
+    /**
+     *  最小堆 （堆化过程-从上往下）
+     * @param k 起始下沉位置 （0（堆顶））
+     * @param x 要下沉的元素
+     * @param array 堆数组
+     * @param n 当前堆大小（边界）
+     * @param <T>
+     */
     private static <T> void siftDownUsingComparator(int k, T x, Object[] array,
                                                     int n,
                                                     Comparator<? super T> cmp) {
-        if (n > 0) {
-            int half = n >>> 1;
-            while (k < half) {
-                int child = (k << 1) + 1;
-                Object c = array[child];
-                int right = child + 1;
-                if (right < n && cmp.compare((T) c, (T) array[right]) > 0)
-                    c = array[child = right];
-                if (cmp.compare(x, (T) c) <= 0)
-                    break;
-                array[k] = c;
-                k = child;
+        if (n > 0) { // 1. 边界检查
+            int half = n >>> 1;           // 第一个叶子节点的索引
+            // 3. 主循环：找较小的子节点
+            while (k < half) { // 只要当前位置还有子节点，就继续循环。
+                int child = (k << 1) + 1; // 4. 计算左子节点索引
+                Object c = array[child]; // 5. 取左子节点元素
+                int right = child + 1; // 6. 计算右子节点
+                // 7. 比较左右子节点，选较小的
+                if (right < n && cmp.compare((T) c, (T) array[right]) > 0) // 左子节点 > 右子节点 → 右子节点更小
+                    c = array[child = right]; // 准备 和右子节点 替换
+                if (cmp.compare(x, (T) c) <= 0) // 8. 跟父节点比较（核心判断）
+                    break; // 父节点必须 ≤ 子节点 ，结束
+                array[k] = c; // 9. 子节点上移
+                k = child; // 10. 当前位置移到子节点 （继续向下比较，准备下一轮循环）
             }
-            array[k] = x;
+            array[k] = x; // 11. 循环结束，放入最终位置
         }
     }
 
@@ -464,35 +471,33 @@ public class PriorityBlockingQueue<E> extends AbstractQueue<E>
     }
 
     /**
-     * Inserts the specified element into this priority queue.
-     * As the queue is unbounded, this method will never return {@code false}.
-     *
-     * @param e the element to add
-     * @return {@code true} (as specified by {@link Queue#offer})
-     * @throws ClassCastException if the specified element cannot be compared
-     *         with elements currently in the priority queue according to the
-     *         priority queue's ordering
-     * @throws NullPointerException if the specified element is null
+     * 将指定元素插入此优先级队列。
+     * 因为队列是无界的，offer 永远不会返回 false。
+     * 永远返回 true，只是为了遵守 Queue.offer 的方法契约。
      */
     public boolean offer(E e) {
         if (e == null)
             throw new NullPointerException();
         final ReentrantLock lock = this.lock;
-        lock.lock();
+        lock.lock(); // 加锁
+        // 3. 变量声明
         int n, cap;
         Object[] array;
-        while ((n = size) >= (cap = (array = queue).length))
-            tryGrow(array, cap);
-        try {
+        // 第四步：扩容检查（核心重点）
+        while ((n = size) >= // 当前堆中元素数量
+                (cap = (array = queue).length)) // 当前数组容量
+            tryGrow(array, cap); // 队列满了 → 需要扩容
+
+        try {// 第五步：入堆（上浮）
             Comparator<? super E> cmp = comparator;
             if (cmp == null)
-                siftUpComparable(n, e, array);
+                siftUpComparable(n, e, array); // 元素必须实现 Comparable，用自然排序
             else
-                siftUpUsingComparator(n, e, array, cmp);
-            size = n + 1;
-            notEmpty.signal();
-        } finally {
-            lock.unlock();
+                siftUpUsingComparator(n, e, array, cmp); // 用提供的比较器
+            size = n + 1; // 元素数量 +1
+            notEmpty.signal(); // 唤醒一个在 take() 里等待的消费者线程（如果之前队列是空的，消费者在 notEmpty.await() 上阻塞）
+        } finally { // 注意：signal() 只是唤醒，不释放锁。锁在 finally 里才释放。
+            lock.unlock(); // 释放锁
         }
         return true;
     }
@@ -530,6 +535,10 @@ public class PriorityBlockingQueue<E> extends AbstractQueue<E>
         return offer(e); // never need to block
     }
 
+
+    /**
+     * 获取堆顶元素并删除。
+     */
     public E poll() {
         final ReentrantLock lock = this.lock;
         lock.lock();
