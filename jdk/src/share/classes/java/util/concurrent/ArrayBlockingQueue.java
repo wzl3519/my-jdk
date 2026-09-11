@@ -79,8 +79,7 @@ import java.util.Spliterator;
  * @author Doug Lea
  * @param <E> the type of elements held in this collection
  */
-public class ArrayBlockingQueue<E> extends AbstractQueue<E>
-        implements BlockingQueue<E>, java.io.Serializable {
+public class ArrayBlockingQueue<E> extends AbstractQueue<E> implements BlockingQueue<E>, java.io.Serializable {
 
     /**
      * Serialization ID. This class relies on default serialization
@@ -90,38 +89,30 @@ public class ArrayBlockingQueue<E> extends AbstractQueue<E>
      */
     private static final long serialVersionUID = -817911632652898426L;
 
-    /** The queued items */
+    /** 保存数据的数组。 */
     final Object[] items;
 
-    /** items index for next take, poll, peek or remove */
+    /** 下一个待取出元素索引 */
     int takeIndex;
 
-    /** items index for next put, offer, or add */
+    /** 下一个待添加元素索引 */
     int putIndex;
 
-    /** Number of elements in the queue */
+    /** 元素个数 */
     int count;
 
-    /*
-     * Concurrency control uses the classic two-condition algorithm
-     * found in any textbook.
-     */
-
-    /** Main lock guarding all access */
+    /** 内部锁（可重入锁） */
     final ReentrantLock lock;
 
-    /** Condition for waiting takes */
+    /** 消费者（队列不为空的条件）。供出队等待用 */
     private final Condition notEmpty;
 
-    /** Condition for waiting puts */
+    /** 生产者（队列未满的条件）。供入队等待用  */
     private final Condition notFull;
 
-    /**
-     * Shared state for currently active iterators, or null if there
-     * are known not to be any.  Allows queue operations to update
-     * iterator state.
-     */
+    /** 当前活动迭代器的共享状态  */
     transient Itrs itrs = null;
+
 
     // Internal helper methods
 
@@ -151,37 +142,32 @@ public class ArrayBlockingQueue<E> extends AbstractQueue<E>
     }
 
     /**
-     * Inserts element at current put position, advances, and signals.
-     * Call only when holding lock.
+     * 在当前的 putIndex 位置插入元素，然后前进指针，最后发信号唤醒等待的消费者。
      */
     private void enqueue(E x) {
-        // assert lock.getHoldCount() == 1;
-        // assert items[putIndex] == null;
         final Object[] items = this.items;
-        items[putIndex] = x;
-        if (++putIndex == items.length)
-            putIndex = 0;
-        count++;
-        notEmpty.signal();
+        items[putIndex] = x; // 放入数组
+        if (++putIndex == items.length) // 移动 putIndex
+            putIndex = 0;  //设计的精髓：环形数组，指针到数组尽头了，返回头部
+        count++; // 计数 +1
+        notEmpty.signal(); // 唤醒一个等待的消费者 （告知对方我已经存入了数据，你可以操作出队了）
     }
 
     /**
-     * Extracts element at current take position, advances, and signals.
-     * Call only when holding lock.
+     * 在当前的 takeIndex 位置取出元素，然后前进指针，最后发信号唤醒等待的生产者。
      */
     private E dequeue() {
-        // assert lock.getHoldCount() == 1;
-        // assert items[takeIndex] != null;
         final Object[] items = this.items;
         @SuppressWarnings("unchecked")
-        E x = (E) items[takeIndex];
-        items[takeIndex] = null;
-        if (++takeIndex == items.length)
-            takeIndex = 0;
-        count--;
+        E x = (E) items[takeIndex]; // 获取元素
+        items[takeIndex] = null; // 移除元素 （置为 null，帮助 GC 回收）
+        if (++takeIndex == items.length)  // 移动 takeIndex
+            takeIndex = 0;  // 设计的精髓：环形数组，指针到数组尽头了，返回头部
+        count--; // 计数 -1
         if (itrs != null)
+            // JDK8 新增的迭代器支持。itrs 是 Itrs 类型（迭代器管理器），用于维护所有活跃的迭代器。当元素被移除时，通知它们更新状态，保证迭代器的弱一致性
             itrs.elementDequeued();
-        notFull.signal();
+        notFull.signal(); // 唤醒一个等待的生产者（告知对方我已经释放空间，你可以入队了）
         return x;
     }
 
@@ -229,200 +215,174 @@ public class ArrayBlockingQueue<E> extends AbstractQueue<E>
     }
 
     /**
-     * Creates an {@code ArrayBlockingQueue} with the given (fixed)
-     * capacity and default access policy.
-     *
-     * @param capacity the capacity of this queue
-     * @throws IllegalArgumentException if {@code capacity < 1}
+     * 创建一个具有给定（固定）容量和默认访问策略的 ArrayBlockingQueue。
+     * 容量必须 ≥ 1，否则抛 IllegalArgumentException。
      */
     public ArrayBlockingQueue(int capacity) {
-        this(capacity, false);
+        this(capacity, false); // 默认非公平策略
     }
 
+
     /**
-     * Creates an {@code ArrayBlockingQueue} with the given (fixed)
-     * capacity and the specified access policy.
-     *
-     * @param capacity the capacity of this queue
-     * @param fair if {@code true} then queue accesses for threads blocked
-     *        on insertion or removal, are processed in FIFO order;
-     *        if {@code false} the access order is unspecified.
-     * @throws IllegalArgumentException if {@code capacity < 1}
+     * 创建一个具有给定（固定）容量和指定访问策略的 ArrayBlockingQueue。
+     * fair = true：因插入（队列满）或移除（队列空）而阻塞的线程，按 FIFO 顺序被唤醒和处理。
+     * fair = false：唤醒顺序不确定（默认行为）。
      */
     public ArrayBlockingQueue(int capacity, boolean fair) {
-        if (capacity <= 0)
+
+        if (capacity <= 0) // 容量必须 ≥ 1；
             throw new IllegalArgumentException();
-        this.items = new Object[capacity];
-        lock = new ReentrantLock(fair);
-        notEmpty = lock.newCondition();
-        notFull =  lock.newCondition();
+        this.items = new Object[capacity]; // 初始化数组
+        lock = new ReentrantLock(fair); // 初始化锁 默认非公平锁
+        notEmpty = lock.newCondition(); // 初始化 消费者队列
+        notFull =  lock.newCondition(); // 初始化 生产者队列
     }
 
+
     /**
-     * Creates an {@code ArrayBlockingQueue} with the given (fixed)
-     * capacity, the specified access policy and initially containing the
-     * elements of the given collection,
-     * added in traversal order of the collection's iterator.
-     *
-     * @param capacity the capacity of this queue
-     * @param fair if {@code true} then queue accesses for threads blocked
-     *        on insertion or removal, are processed in FIFO order;
-     *        if {@code false} the access order is unspecified.
-     * @param c the collection of elements to initially contain
-     * @throws IllegalArgumentException if {@code capacity} is less than
-     *         {@code c.size()}, or less than 1.
-     * @throws NullPointerException if the specified collection or any
-     *         of its elements are null
+     * 创建一个具有给定固定容量和指定访问策略的队列，并初始包含给定集合中的元素，按集合迭代器的遍历顺序添加。
      */
     public ArrayBlockingQueue(int capacity, boolean fair,
                               Collection<? extends E> c) {
         this(capacity, fair);
 
         final ReentrantLock lock = this.lock;
-        lock.lock(); // Lock only for visibility, not mutual exclusion
+        lock.lock(); //加锁
         try {
             int i = 0;
             try {
                 for (E e : c) {
-                    checkNotNull(e);
+                    checkNotNull(e); // 不允许 null 元素，抛异常
                     items[i++] = e;
                 }
             } catch (ArrayIndexOutOfBoundsException ex) {
-                throw new IllegalArgumentException();
+                throw new IllegalArgumentException(); // 集合元素比队列容量还多，抛异常。
             }
-            count = i;
-            putIndex = (i == capacity) ? 0 : i;
+
+            count = i; // 修改队列中元素个数
+            putIndex = (i == capacity) ? 0 : i; // 修改下一个待添加元素索引
         } finally {
-            lock.unlock();
+            lock.unlock(); //解锁
         }
     }
 
+
     /**
-     * Inserts the specified element at the tail of this queue if it is
-     * possible to do so immediately without exceeding the queue's capacity,
-     * returning {@code true} upon success and throwing an
-     * {@code IllegalStateException} if this queue is full.
-     *
-     * @param e the element to add
-     * @return {@code true} (as specified by {@link Collection#add})
-     * @throws IllegalStateException if this queue is full
-     * @throws NullPointerException if the specified element is null
+     *  将元素插入队列尾部；成功返回 true，队列满则抛出 IllegalStateException 异常
      */
     public boolean add(E e) {
         return super.add(e);
     }
 
     /**
-     * Inserts the specified element at the tail of this queue if it is
-     * possible to do so immediately without exceeding the queue's capacity,
-     * returning {@code true} upon success and {@code false} if this queue
-     * is full.  This method is generally preferable to method {@link #add},
-     * which can fail to insert an element only by throwing an exception.
-     *
-     * @throws NullPointerException if the specified element is null
+     *  将元素插入队列尾部； 成功返回 true，队列满则返回 false。
      */
     public boolean offer(E e) {
-        checkNotNull(e);
+        checkNotNull(e); // 检查 null，抛异常（元素不能为 null）
         final ReentrantLock lock = this.lock;
-        lock.lock();
+        lock.lock(); // 加锁
         try {
-            if (count == items.length)
-                return false;
+            if (count == items.length) // 队列满了
+                return false;  // ← 直接返回 false
             else {
-                enqueue(e);
+                enqueue(e);  // ← 插入元素
                 return true;
             }
         } finally {
-            lock.unlock();
+            lock.unlock(); // 解锁
         }
     }
 
+
     /**
-     * Inserts the specified element at the tail of this queue, waiting
-     * for space to become available if the queue is full.
-     *
-     * @throws InterruptedException {@inheritDoc}
-     * @throws NullPointerException {@inheritDoc}
+     * 将元素插入队尾；如果队列满了，就一直等待，直到有空间可用。
      */
     public void put(E e) throws InterruptedException {
-        checkNotNull(e);
+        checkNotNull(e); // 检查 null
         final ReentrantLock lock = this.lock;
-        lock.lockInterruptibly();
+        lock.lockInterruptibly(); // 加锁
         try {
-            while (count == items.length)
-                notFull.await();
-            enqueue(e);
+            while (count == items.length) // 队列满，进入循环等待状态
+                notFull.await(); // ← 无限等待！ （等待别处释放空间）
+            enqueue(e); // ← 有空间了，插入元素
         } finally {
-            lock.unlock();
+            lock.unlock(); // 解锁
         }
     }
 
     /**
-     * Inserts the specified element at the tail of this queue, waiting
-     * up to the specified wait time for space to become available if
-     * the queue is full.
-     *
-     * @throws InterruptedException {@inheritDoc}
-     * @throws NullPointerException {@inheritDoc}
+     * 将元素插入队尾；如果队列满了，等待释放空间，超时后还是满的，就放弃。
      */
     public boolean offer(E e, long timeout, TimeUnit unit)
         throws InterruptedException {
 
-        checkNotNull(e);
-        long nanos = unit.toNanos(timeout);
+        checkNotNull(e); // 检查 null，抛异常（元素不能为 null）
+        long nanos = unit.toNanos(timeout); // 转换为纳秒
         final ReentrantLock lock = this.lock;
-        lock.lockInterruptibly();
+        lock.lockInterruptibly(); //加锁 （被中断时抛出InterruptedException）
         try {
-            while (count == items.length) {
+            while (count == items.length) { // 队列已满时，进入循环等待状态
                 if (nanos <= 0)
-                    return false;
-                nanos = notFull.awaitNanos(nanos);
+                    return false; //  等待超时了，返回 false
+                nanos = notFull.awaitNanos(nanos);  // ← 限时等待，返回剩余纳秒 （等待别处释放空间）
             }
-            enqueue(e);
+            enqueue(e);  // ← 有空间了，插入元素
             return true;
         } finally {
-            lock.unlock();
+            lock.unlock(); // 解锁
         }
     }
 
+    /**
+     * 获取并移除队列中的一个元素；如果队列为空，返回 null
+     */
     public E poll() {
         final ReentrantLock lock = this.lock;
-        lock.lock();
+        lock.lock(); // 加锁
         try {
             return (count == 0) ? null : dequeue();
         } finally {
-            lock.unlock();
+            lock.unlock(); // 解锁
         }
     }
 
+    /**
+     * 获取并移除一个元素，如果队列为空，则将一直等待，直到队列中有元素可用
+     */
     public E take() throws InterruptedException {
         final ReentrantLock lock = this.lock;
-        lock.lockInterruptibly();
+        lock.lockInterruptibly(); // 加锁
         try {
-            while (count == 0)
-                notEmpty.await();
+            while (count == 0) // 队列为空时，进入循环等待状态
+                notEmpty.await(); // ← 一直等待 （等到别处入队）
             return dequeue();
         } finally {
-            lock.unlock();
+            lock.unlock();  // 解锁
         }
     }
 
+    /**
+     * 获取并移除队列中的头元素；如果队列为空，等待存入数据，超时后还是为空，就放弃。
+     */
     public E poll(long timeout, TimeUnit unit) throws InterruptedException {
-        long nanos = unit.toNanos(timeout);
+        long nanos = unit.toNanos(timeout); // 转换纳秒
         final ReentrantLock lock = this.lock;
-        lock.lockInterruptibly();
+        lock.lockInterruptibly(); // 加锁
         try {
-            while (count == 0) {
+            while (count == 0) { // 队列为空时，进入循环等待状态
                 if (nanos <= 0)
-                    return null;
-                nanos = notEmpty.awaitNanos(nanos);
+                    return null; //  等待超时了，返回 null
+                nanos = notEmpty.awaitNanos(nanos); // ← 限时等待，返回剩余纳秒 （等待别处入队）
             }
-            return dequeue();
+            return dequeue(); // ← 有数据了，获取元素并删除
         } finally {
             lock.unlock();
         }
     }
 
+    /**
+     * 用于查看队列头部的元素，但不从队列中移除它。如果队列为空，则返回 null。
+     */
     public E peek() {
         final ReentrantLock lock = this.lock;
         lock.lock();
@@ -474,21 +434,11 @@ public class ArrayBlockingQueue<E> extends AbstractQueue<E>
     }
 
     /**
-     * Removes a single instance of the specified element from this queue,
-     * if it is present.  More formally, removes an element {@code e} such
-     * that {@code o.equals(e)}, if this queue contains one or more such
-     * elements.
-     * Returns {@code true} if this queue contained the specified element
-     * (or equivalently, if this queue changed as a result of the call).
+     * 移除指定元素
+     * 如果队列中存在指定元素，则移除其中一个实例。具体地说，移除满足 o.equals(e) 的元素。如果有多个匹配，只移除第一个（从队头到队尾顺序遍历找到的第一个）。
+     * 如果队列中确实包含该元素（即队列发生了改变），返回 true；否则返回 false。
+     * 在基于循环数组的队列中，移除"内部元素"（非队头）本质上是一个缓慢且有破坏性的操作。因此只应该在特殊情况下才这么做，理想情况下是确定没有其他线程在访问该队列时才调用。
      *
-     * <p>Removal of interior elements in circular array based queues
-     * is an intrinsically slow and disruptive operation, so should
-     * be undertaken only in exceptional circumstances, ideally
-     * only when the queue is known not to be accessible by other
-     * threads.
-     *
-     * @param o element to be removed from this queue, if present
-     * @return {@code true} if this queue changed as a result of the call
      */
     public boolean remove(Object o) {
         if (o == null) return false;

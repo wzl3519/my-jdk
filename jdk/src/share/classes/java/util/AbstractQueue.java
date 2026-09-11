@@ -72,24 +72,8 @@ public abstract class AbstractQueue<E>
     }
 
     /**
-     * Inserts the specified element into this queue if it is possible to do so
-     * immediately without violating capacity restrictions, returning
-     * <tt>true</tt> upon success and throwing an <tt>IllegalStateException</tt>
-     * if no space is currently available.
-     *
-     * <p>This implementation returns <tt>true</tt> if <tt>offer</tt> succeeds,
-     * else throws an <tt>IllegalStateException</tt>.
-     *
-     * @param e the element to add
-     * @return <tt>true</tt> (as specified by {@link Collection#add})
-     * @throws IllegalStateException if the element cannot be added at this
-     *         time due to capacity restrictions
-     * @throws ClassCastException if the class of the specified element
-     *         prevents it from being added to this queue
-     * @throws NullPointerException if the specified element is null and
-     *         this queue does not permit null elements
-     * @throws IllegalArgumentException if some property of this element
-     *         prevents it from being added to this queue
+     *  add 就是 offer 的包装
+     *  成功就返回 true，否则抛出 IllegalStateException。
      */
     public boolean add(E e) {
         if (offer(e))
