@@ -247,41 +247,28 @@ public class ConcurrentLinkedDeque<E>
     private static final long serialVersionUID = 876323262645176354L;
 
     /**
-     * A node from which the first node on list (that is, the unique node p
-     * with p.prev == null && p.next != p) can be reached in O(1) time.
-     * Invariants:
-     * - the first node is always O(1) reachable from head via prev links
-     * - all live nodes are reachable from the first node via succ()
-     * - head != null
-     * - (tmp = head).next != tmp || tmp != head
-     * - head is never gc-unlinked (but may be unlinked)
-     * Non-invariants:
-     * - head.item may or may not be null
-     * - head may not be reachable from the first or last node, or from tail
+     * head 本身不一定是第一个节点，但它离第一个节点很近（0~2步）
+     * 从 head 沿 prev 向前，O(1) 步必到第一个节点
      */
     private transient volatile Node<E> head;
 
     /**
-     * A node from which the last node on list (that is, the unique node p
-     * with p.next == null && p.prev != p) can be reached in O(1) time.
-     * Invariants:
-     * - the last node is always O(1) reachable from tail via next links
-     * - all live nodes are reachable from the last node via pred()
-     * - tail != null
-     * - tail is never gc-unlinked (but may be unlinked)
-     * Non-invariants:
-     * - tail.item may or may not be null
-     * - tail may not be reachable from the first or last node, or from head
+     * tail 本身不一定是最后一节点，但它离最后一个节点很近（0~2步）
+     * 从 tail 沿 next 向后，O(1) 步必到最后一个节点
      */
     private transient volatile Node<E> tail;
-
+    /**
+     * 全局共享的哨兵节点
+     */
     private static final Node<Object> PREV_TERMINATOR, NEXT_TERMINATOR;
 
+    // 标记节点的 prev 方向已被 gc-unlink
     @SuppressWarnings("unchecked")
     Node<E> prevTerminator() {
         return (Node<E>) PREV_TERMINATOR;
     }
 
+    // 标记节点的 next 方向已被 gc-unlink
     @SuppressWarnings("unchecked")
     Node<E> nextTerminator() {
         return (Node<E>) NEXT_TERMINATOR;
@@ -347,67 +334,62 @@ public class ConcurrentLinkedDeque<E>
     }
 
     /**
-     * Links e as first element.
+     * 队首增加元素
      */
     private void linkFirst(E e) {
         checkNotNull(e);
-        final Node<E> newNode = new Node<E>(e);
+        final Node<E> newNode = new Node<E>(e); // 建立新节点
 
         restartFromHead:
-        for (;;)
-            for (Node<E> h = head, p = h, q;;) {
+        for (;;) // 外层：无限自旋（无锁重试）
+            for (Node<E> h = head, p = h, q;;) { // 内层：从 head 出发向前遍历找真头
+                // 2. 找真正的头节点
                 if ((q = p.prev) != null &&
                     (q = (p = q).prev) != null)
-                    // Check for head updates every other hop.
-                    // If p == q, we are sure to follow head instead.
+                    // 核心探测：沿 prev 向前跳两步 （每两步检查一次 head 有没有被别的线程更新。）
                     p = (h != (h = head)) ? h : q;
-                else if (p.next == p) // PREV_TERMINATOR
+                else if (p.next == p)  // 3. 踩到脏节点：自链接
                     continue restartFromHead;
-                else {
+                else { // 4. 找到头节点，CAS 挂载新节点
                     // p is first node
-                    newNode.lazySetNext(p); // CAS piggyback
-                    if (p.casPrev(null, newNode)) {
-                        // Successful CAS is the linearization point
-                        // for e to become an element of this deque,
-                        // and for newNode to become "live".
+                    newNode.lazySetNext(p); // 给新节点挂上后驱节点
+                    if (p.casPrev(null, newNode)) { // CAS 挂载
+                        // 5. 推进 head（HOP 策略）
                         if (p != h) // hop two nodes at a time
                             casHead(h, newNode);  // Failure is OK.
-                        return;
+                        return; // 入队成功
                     }
-                    // Lost CAS race to another thread; re-read prev
+                    //  6. CAS 失败：自旋重试
                 }
             }
     }
 
     /**
-     * Links e as last element.
+     * 链表队尾添加元素
      */
     private void linkLast(E e) {
         checkNotNull(e);
-        final Node<E> newNode = new Node<E>(e);
+        final Node<E> newNode = new Node<E>(e); // 新建节点
 
-        restartFromTail:
-        for (;;)
-            for (Node<E> t = tail, p = t, q;;) {
+        restartFromTail: // 标签：遇到脏数据从头来
+        for (;;) // 外层：无限自旋（无锁重试）
+            for (Node<E> t = tail, p = t, q;;) { // 内层：从 tail 出发向后遍历找真尾
+                // 2. 找真正的尾节点
                 if ((q = p.next) != null &&
                     (q = (p = q).next) != null)
-                    // Check for tail updates every other hop.
-                    // If p == q, we are sure to follow tail instead.
+                    // 核心探测：尝试向前跳两步 （跳两步 + 每两步检查一次 tail 有没有被别的线程更新。）
                     p = (t != (t = tail)) ? t : q;
-                else if (p.prev == p) // NEXT_TERMINATOR
+                else if (p.prev == p) // 3. 踩到脏节点：自链接 / Terminator
                     continue restartFromTail;
-                else {
-                    // p is last node
-                    newNode.lazySetPrev(p); // CAS piggyback
-                    if (p.casNext(null, newNode)) {
-                        // Successful CAS is the linearization point
-                        // for e to become an element of this deque,
-                        // and for newNode to become "live".
+                else { // 4. 找到尾节点，CAS 挂载新节点
+                    newNode.lazySetPrev(p); // 给新节点挂上前驱节点
+                    if (p.casNext(null, newNode)) { // CAS 挂载
+                        // 5. 推进 tail（HOP 策略）
                         if (p != t) // hop two nodes at a time
                             casTail(t, newNode);  // Failure is OK.
-                        return;
+                        return; // 入队成功
                     }
-                    // Lost CAS race to another thread; re-read next
+                    //  6. CAS 失败：自旋重试
                 }
             }
     }
@@ -653,6 +635,9 @@ public class ConcurrentLinkedDeque<E>
         }
     }
 
+    /**
+     * 跳过中间所有已删除节点（向前找第一个活跃节点）
+     */
     private void skipDeletedPredecessors(Node<E> x) {
         whileActive:
         do {
@@ -684,6 +669,9 @@ public class ConcurrentLinkedDeque<E>
         } while (x.item != null || x.next == null);
     }
 
+    /**
+     * 跳过中间所有已删除节点（向后找第一个活跃节点）
+     */
     private void skipDeletedSuccessors(Node<E> x) {
         whileActive:
         do {
@@ -733,7 +721,7 @@ public class ConcurrentLinkedDeque<E>
      */
     final Node<E> pred(Node<E> p) {
         Node<E> q = p.prev;
-        return (p == q) ? last() : q;
+        return (p == q) ? last() : q;  // 碰到自链接，循环继续从尾部重新向前找
     }
 
     /**
@@ -769,19 +757,20 @@ public class ConcurrentLinkedDeque<E>
      */
     Node<E> last() {
         restartFromTail:
-        for (;;)
-            for (Node<E> t = tail, p = t, q;;) {
+        for (;;)   // 外层：无限自旋
+            for (Node<E> t = tail, p = t, q;;) { // 内层：从 tail 出发向后遍历
+                // 核心探测：尝试向后跳两步
                 if ((q = p.next) != null &&
                     (q = (p = q).next) != null)
-                    // Check for tail updates every other hop.
-                    // If p == q, we are sure to follow tail instead.
+                    // 跳两步 + 每两步检查 tail
                     p = (t != (t = tail)) ? t : q;
+                // 找到尾部候选节点
                 else if (p == t
                          // It is possible that p is NEXT_TERMINATOR,
                          // but if so, the CAS is guaranteed to fail.
                          || casTail(t, p))
                     return p;
-                else
+                else // CAS 失败：重来
                     continue restartFromTail;
             }
     }
@@ -916,19 +905,17 @@ public class ConcurrentLinkedDeque<E>
     }
 
     /**
-     * Inserts the specified element at the end of this deque.
-     * As the deque is unbounded, this method will never return {@code false}.
-     *
-     * <p>This method is equivalent to {@link #add}.
-     *
-     * @return {@code true} (as specified by {@link Deque#offerLast})
-     * @throws NullPointerException if the specified element is null
+     * 在双端队列的尾部插入指定元素。
      */
     public boolean offerLast(E e) {
         linkLast(e);
         return true;
     }
 
+    /**
+     * 获取队头元素
+     * @return
+     */
     public E peekFirst() {
         for (Node<E> p = first(); p != null; p = succ(p)) {
             E item = p.item;
@@ -938,6 +925,10 @@ public class ConcurrentLinkedDeque<E>
         return null;
     }
 
+    /**
+     * 获取队尾元素
+     * @return
+     */
     public E peekLast() {
         for (Node<E> p = last(); p != null; p = pred(p)) {
             E item = p.item;
@@ -961,22 +952,35 @@ public class ConcurrentLinkedDeque<E>
         return screenNullResult(peekLast());
     }
 
+    /**
+     * 获取并删除第一个元素
+     * @return
+     */
     public E pollFirst() {
+        // first() —— 从 head 找第一个 live 节点
+        // 循环：沿 next 向后遍历找有元素的节点
         for (Node<E> p = first(); p != null; p = succ(p)) {
             E item = p.item;
             if (item != null && p.casItem(item, null)) {
-                unlink(p);
+                unlink(p); // 三阶段删除
                 return item;
             }
         }
         return null;
     }
 
+    /**
+     * 获取并删除最后一个元素
+     * @return
+     */
     public E pollLast() {
+        // last() —— 找最后一个 live 节点
+        // 循环：沿 prev 向前找有元素的节点
         for (Node<E> p = last(); p != null; p = pred(p)) {
+            // 3. 读 item + CAS 摘除元素
             E item = p.item;
             if (item != null && p.casItem(item, null)) {
-                unlink(p);
+                unlink(p); // 4.三阶段删除
                 return item;
             }
         }
@@ -1000,11 +1004,7 @@ public class ConcurrentLinkedDeque<E>
     // *** Queue and stack methods ***
 
     /**
-     * Inserts the specified element at the tail of this deque.
-     * As the deque is unbounded, this method will never return {@code false}.
-     *
-     * @return {@code true} (as specified by {@link Queue#offer})
-     * @throws NullPointerException if the specified element is null
+     * 在双端队列的尾部插入指定元素。
      */
     public boolean offer(E e) {
         return offerLast(e);
