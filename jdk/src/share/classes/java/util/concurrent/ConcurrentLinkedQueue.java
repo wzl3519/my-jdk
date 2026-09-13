@@ -286,24 +286,19 @@ public class ConcurrentLinkedQueue<E> extends AbstractQueue<E>
     // Have to override just to update the javadoc
 
     /**
-     * Inserts the specified element at the tail of this queue.
-     * As the queue is unbounded, this method will never throw
-     * {@link IllegalStateException} or return {@code false}.
-     *
-     * @return {@code true} (as specified by {@link Collection#add})
-     * @throws NullPointerException if the specified element is null
+     * 队尾插元素
      */
     public boolean add(E e) {
         return offer(e);
     }
 
     /**
-     * Tries to CAS head to p. If successful, repoint old head to itself
-     * as sentinel for succ(), below.
+     * 尝试用 CAS 把共享的 head 指针从 h（旧头）原子地更新为 p（新头）。
+     * 如果 CAS 成功，把旧 head（h）的 next 指针指向它自己，作为 succ() 方法的哨兵标记。
      */
     final void updateHead(Node<E> h, Node<E> p) {
         if (h != p && casHead(h, p))
-            h.lazySetNext(h);
+            h.lazySetNext(h); // // 把旧 head 的 next 指向自己（自链接）（标记它为已删除，帮助其他线程识别。）
     }
 
     /**
@@ -317,63 +312,70 @@ public class ConcurrentLinkedQueue<E> extends AbstractQueue<E>
     }
 
     /**
-     * Inserts the specified element at the tail of this queue.
-     * As the queue is unbounded, this method will never return {@code false}.
-     *
-     * @return {@code true} (as specified by {@link Queue#offer})
-     * @throws NullPointerException if the specified element is null
+     * 队尾插入元素。永远返回 true
      */
     public boolean offer(E e) {
-        checkNotNull(e);
-        final Node<E> newNode = new Node<E>(e);
+        checkNotNull(e); // 不能为 null
+        final Node<E> newNode = new Node<E>(e); // 新建节点
 
+        // t：局部变量，保存当前线程看到的 tail（队尾）快照，用来减少频繁读取共享变量 tail 的开销。
+        // p：遍历指针，用来在链表中寻找真正的最后一个节点。初始时 p 指向 t。
         for (Node<E> t = tail, p = t;;) {
-            Node<E> q = p.next;
-            if (q == null) {
-                // p is last node
-                if (p.casNext(null, newNode)) {
-                    // Successful CAS is the linearization point
-                    // for e to become an element of this queue,
-                    // and for newNode to become "live".
-                    if (p != t) // hop two nodes at a time
-                        casTail(t, newNode);  // Failure is OK.
+            Node<E> q = p.next; //  获取后继节点
+            if (q == null) {  // 当分支一：找到了逻辑上的尾节点
+                if (p.casNext(null, newNode)) { // CAS成功：说明当前线程抢到了这个位置，入队成功。
+                    if (p != t) // // 检查 p 在刚才的循环中有没有向前移动过（即 t 是不是已经不是真正的尾节点了）。
+                        casTail(t, newNode); // 意味着 真实的尾节点已经 可能已经落后了两个或更多节点。 （“最终一致性”思想）
+                    // 如果 p == t，说明 t 本来就是尾节点，没必要更新 tail，直接返回。
                     return true;
                 }
-                // Lost CAS race to another thread; re-read next
+                // CAS失败： 说明其他线程抢先一步在 p 后面插了节点（即 p.next 不再是 null 了），进入下一次循环重试。
             }
-            else if (p == q)
-                // We have fallen off list.  If tail is unchanged, it
-                // will also be off-list, in which case we need to
-                // jump to head, from which all live nodes are always
-                // reachable.  Else the new tail is a better bet.
+            else if (p == q) // 分支二：遇到了“哨兵/自链接”节点。 p == q 意味着 p 是一个已经被删除的节点，不能再往后遍历了。
+                /* 如果 tail 被其他线程改过了（旧 t ≠ 新 tail）：p 直接跳到最新的 tail 上，省去无用遍历。
+                 如果 tail 没变：p 跳到 head，从队列头部重新开始遍历（因为 tail 可能暂时处于无效位置）。*/
                 p = (t != (t = tail)) ? t : head;
-            else
-                // Check for tail updates after two hops.
-                p = (p != t && t != (t = tail)) ? t : q;
+            else // 分支三：正常情况，说明 p 后面还有节点，p 不是真正的尾部。
+               /* p != t：检查 p 是否已经从初始位置移动过（即已经跳过了原来的 t）。
+                  t != (t = tail)：再次检查全局 tail 是否被其他线程更新。
+                  如果两个条件都满足：说明 p 已经走过头了，且 tail 已经被别人更新，此时直接把 p 指向最新的 tail（t），走个捷径。
+                  否则：老老实实把 p 向后移一步，指向 q（即 p = p.next），继续循环寻找尾部。 */
+                p = (p != t &&  t != (t = tail))  ? t : q;
         }
     }
 
+    /**
+     * 出队一个元素。采用了 CAS + 自旋 + 指针滞后更新 的经典无锁策略
+     */
     public E poll() {
-        restartFromHead:
-        for (;;) {
+        // 1. 外层循环与标签
+        restartFromHead: // 语句标签
+        for (;;) { // 无锁自旋
+            // 2. 初始化遍历指针
             for (Node<E> h = head, p = h, q;;) {
-                E item = p.item;
-
-                if (item != null && p.casItem(item, null)) {
-                    // Successful CAS is the linearization point
+                E item = p.item; // 读取 p 节点的元素。
+                // 3. 尝试出队（CAS 抢元素）
+                if (item != null && // 说明 p 节点还没被出队。
+                        p.casItem(item, null)) { // 尝试用 CAS 把 p.item 从原值改为 null。
+                    /* CAS成功：说明当前线程成功“抢到”了这个元素，p 节点被逻辑删除（元素被拿走）。
+                     CAS失败：说明其他线程抢先出队了 p，进入后续分支继续找下一个。*/
                     // for item to be removed from this queue.
-                    if (p != h) // hop two nodes at a time
+                    if (p != h) // 说明 head 滞后了，调用 updateHead 更新共享 head。
+                        // 如果 p 后面还有节点，就把 head 指向 p.next；如果 p 已经是最后一个节点了，就把 head 指向 p 自己。
                         updateHead(h, ((q = p.next) != null) ? q : p);
-                    return item;
+                    // p == h：p 没动过，head 就是第一个节点，没必要更新，直接返回元素。
+                    return item; // 出队成功。
                 }
-                else if ((q = p.next) == null) {
-                    updateHead(h, p);
-                    return null;
+                //4. 队列为空（q == null）
+                else if ((q = p.next) == null) { // p 没有后继节点了，说明队列里已经没有元素可出。
+                    updateHead(h, p); // 即使没出到元素，也顺手把 head 更新到 p（因为 p 可能是被删除的节点，更新 head 可以缩短后续遍历路径）。
+                    return null; // 队列为空，返回 null。
                 }
-                else if (p == q)
-                    continue restartFromHead;
-                else
-                    p = q;
+                // 5. 遇到哨兵/自链接节点（p == q）
+                else if (p == q) // 说明 p 是一个已经被出队删除的节点（updateHead 时会把旧 head 的 next 指向自己，形成自链接）。
+                    continue restartFromHead; // 从脏节点无法继续向后走，直接跳回外层循环，重新读取最新的 head 开始遍历。
+                else // 6. 正常推进（p = q）
+                    p = q; // p 后面有节点且不是自链接，说明 p 不是目标节点（元素为 null 或已被别人抢走），直接把 p 向后移一步，继续找。
             }
         }
     }

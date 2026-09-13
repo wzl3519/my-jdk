@@ -107,116 +107,63 @@ import sun.misc.SharedSecrets;
  * @param <E> the type of elements held in this collection
  */
 @SuppressWarnings("unchecked")
-public class PriorityBlockingQueue<E> extends AbstractQueue<E>
-    implements BlockingQueue<E>, java.io.Serializable {
+public class PriorityBlockingQueue<E> extends AbstractQueue<E> implements BlockingQueue<E>, java.io.Serializable {
     private static final long serialVersionUID = 5595510919245408276L;
-
-    /*
-     * The implementation uses an array-based binary heap, with public
-     * operations protected with a single lock. However, allocation
-     * during resizing uses a simple spinlock (used only while not
-     * holding main lock) in order to allow takes to operate
-     * concurrently with allocation.  This avoids repeated
-     * postponement of waiting consumers and consequent element
-     * build-up. The need to back away from lock during allocation
-     * makes it impossible to simply wrap delegated
-     * java.util.PriorityQueue operations within a lock, as was done
-     * in a previous version of this class. To maintain
-     * interoperability, a plain PriorityQueue is still used during
-     * serialization, which maintains compatibility at the expense of
-     * transiently doubling overhead.
-     */
-
     /**
-     * Default array capacity.
+     * 默认初始容量 11
      */
     private static final int DEFAULT_INITIAL_CAPACITY = 11;
-
     /**
      * 能分配的数组的最大大小。
-     *
-     * JVM 对单个对象能分配的最大字节数有限制（通常是 Integer.MAX_VALUE 个字节的寻址空间）
-     *
-     * 但 JVM 在分配时会检查总大小（元素 + 对象头）是否超过限制。预留 8 个位置就是给对象头留一个安全边界。
+     * JVM 对数组对象有对象头开销，减 8 是给对象头留安全边界。
      */
     private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
-
     /**
-     * Priority queue represented as a balanced binary heap: the two
-     * children of queue[n] are queue[2*n+1] and queue[2*(n+1)].  The
-     * priority queue is ordered by comparator, or by the elements'
-     * natural ordering, if comparator is null: For each node n in the
-     * heap and each descendant d of n, n <= d.  The element with the
-     * lowest value is in queue[0], assuming the queue is nonempty.
+     * 堆的底层存储
      */
     private transient Object[] queue;
-
     /**
-     * 优先级队列中的元素数
+     * 当前元素数量。
      */
     private transient int size;
-
     /**
-     * The comparator, or null if priority queue uses elements'
-     * natural ordering.
+     * 比较器，null 表示用自然排序（Comparable）。
      */
     private transient Comparator<? super E> comparator;
-
     /**
-     * Lock used for all public operations
+     * 主锁，保护所有公开操作。
      */
     private final ReentrantLock lock;
-
     /**
-     * Condition for blocking when empty
+     * 条件变量
      */
     private final Condition notEmpty;
 
     /**
-     * Spinlock for allocation, acquired via CAS.
+     * 扩容自旋锁
      */
     private transient volatile int allocationSpinLock;
-
     /**
-     * A plain PriorityQueue used only for serialization,
-     * to maintain compatibility with previous versions
-     * of this class. Non-null only during serialization/deserialization.
+     * 仅用于序列化/反序列化。
      */
     private PriorityQueue<E> q;
 
     /**
-     * Creates a {@code PriorityBlockingQueue} with the default
-     * initial capacity (11) that orders its elements according to
-     * their {@linkplain Comparable natural ordering}.
+     * 创建一个默认容量 11，自然排序 的PriorityBlockingQueue 实例。
      */
     public PriorityBlockingQueue() {
         this(DEFAULT_INITIAL_CAPACITY, null);
     }
 
     /**
-     * Creates a {@code PriorityBlockingQueue} with the specified
-     * initial capacity that orders its elements according to their
-     * {@linkplain Comparable natural ordering}.
-     *
-     * @param initialCapacity the initial capacity for this priority queue
-     * @throws IllegalArgumentException if {@code initialCapacity} is less
-     *         than 1
+     * 创建一个指定初始容量，自然排序的实例。
      */
     public PriorityBlockingQueue(int initialCapacity) {
         this(initialCapacity, null);
     }
 
     /**
-     * Creates a {@code PriorityBlockingQueue} with the specified initial
-     * capacity that orders its elements according to the specified
-     * comparator.
-     *
-     * @param initialCapacity the initial capacity for this priority queue
-     * @param  comparator the comparator that will be used to order this
-     *         priority queue.  If {@code null}, the {@linkplain Comparable
-     *         natural ordering} of the elements will be used.
-     * @throws IllegalArgumentException if {@code initialCapacity} is less
-     *         than 1
+     * 创建一个指定容量 + 自定义比较器的实例。
      */
     public PriorityBlockingQueue(int initialCapacity,
                                  Comparator<? super E> comparator) {
@@ -229,20 +176,7 @@ public class PriorityBlockingQueue<E> extends AbstractQueue<E>
     }
 
     /**
-     * Creates a {@code PriorityBlockingQueue} containing the elements
-     * in the specified collection.  If the specified collection is a
-     * {@link SortedSet} or a {@link PriorityQueue}, this
-     * priority queue will be ordered according to the same ordering.
-     * Otherwise, this priority queue will be ordered according to the
-     * {@linkplain Comparable natural ordering} of its elements.
-     *
-     * @param  c the collection whose elements are to be placed
-     *         into this priority queue
-     * @throws ClassCastException if elements of the specified collection
-     *         cannot be compared to one another according to the priority
-     *         queue's ordering
-     * @throws NullPointerException if the specified collection or any
-     *         of its elements are null
+     * 创建一个已有集合初始化的实例。
      */
     public PriorityBlockingQueue(Collection<? extends E> c) {
         this.lock = new ReentrantLock();

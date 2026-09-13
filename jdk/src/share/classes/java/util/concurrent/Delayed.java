@@ -49,12 +49,8 @@ package java.util.concurrent;
 public interface Delayed extends Comparable<Delayed> {
 
     /**
-     * Returns the remaining delay associated with this object, in the
-     * given time unit.
-     *
-     * @param unit the time unit
-     * @return the remaining delay; zero or negative values indicate
-     * that the delay has already elapsed
+     * 给定的时间单位
+     * 返回与此对象关联的剩余延迟.
      */
     long getDelay(TimeUnit unit);
 }

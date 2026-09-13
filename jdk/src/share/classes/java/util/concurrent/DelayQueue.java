@@ -70,46 +70,34 @@ import java.util.*;
 public class DelayQueue<E extends Delayed> extends AbstractQueue<E>
     implements BlockingQueue<E> {
 
+    /**
+     * 保证线程安全
+     */
     private final transient ReentrantLock lock = new ReentrantLock();
+    /**
+     * 优先级队列（存储元素）
+     */
     private final PriorityQueue<E> q = new PriorityQueue<E>();
 
     /**
-     * Thread designated to wait for the element at the head of
-     * the queue.  This variant of the Leader-Follower pattern
-     * (http://www.cs.wustl.edu/~schmidt/POSA/POSA2/) serves to
-     * minimize unnecessary timed waiting.  When a thread becomes
-     * the leader, it waits only for the next delay to elapse, but
-     * other threads await indefinitely.  The leader thread must
-     * signal some other thread before returning from take() or
-     * poll(...), unless some other thread becomes leader in the
-     * interim.  Whenever the head of the queue is replaced with
-     * an element with an earlier expiration time, the leader
-     * field is invalidated by being reset to null, and some
-     * waiting thread, but not necessarily the current leader, is
-     * signalled.  So waiting threads must be prepared to acquire
-     * and lose leadership while waiting.
+     * Leader-Follower 模式
+     * 避免所有等待线程都做定时等待，只有一个 leader 线程定时，其余线程无限等待，极大节省资源。
      */
     private Thread leader = null;
 
     /**
-     * Condition signalled when a newer element becomes available
-     * at the head of the queue or a new thread may need to
-     * become leader.
+     * 当新元素可用时发出信号
+     * 在队列的最前面，或者可能需要一个新线程成为领导者。
      */
     private final Condition available = lock.newCondition();
 
     /**
-     * Creates a new {@code DelayQueue} that is initially empty.
+     * 创建一个初始为空的新 DelayQueue
      */
     public DelayQueue() {}
 
     /**
-     * Creates a {@code DelayQueue} initially containing the elements of the
-     * given collection of {@link Delayed} instances.
-     *
-     * @param c the collection of elements to initially contain
-     * @throws NullPointerException if the specified collection or any
-     *         of its elements are null
+     * 创建一个给定的实例集合 DelayQueue
      */
     public DelayQueue(Collection<? extends E> c) {
         this.addAll(c);
@@ -127,24 +115,23 @@ public class DelayQueue<E extends Delayed> extends AbstractQueue<E>
     }
 
     /**
-     * Inserts the specified element into this delay queue.
-     *
-     * @param e the element to add
-     * @return {@code true}
-     * @throws NullPointerException if the specified element is null
+     * 将指定元素插入此延迟队列。
      */
     public boolean offer(E e) {
         final ReentrantLock lock = this.lock;
-        lock.lock();
+        lock.lock(); // 1. 加锁
         try {
-            q.offer(e);
-            if (q.peek() == e) {
+            q.offer(e); // 2. 委托给底层 PriorityQueue
+
+            if (q.peek() == e) { // 3. 核心判断：刚入队的元素是否在队顶
                 leader = null;
                 available.signal();
+                // 如果不判断 q.peek() == e，每次 offer 都 signal()，会导致“惊群效应”
+                // （所有等待线程都被唤醒，但只有一个能拿到锁，浪费资源）。只有在新元素比之前所有元素到期时间都早时，才需要打断现有的等待策略。
             }
             return true;
         } finally {
-            lock.unlock();
+            lock.unlock();  // 3. 解锁
         }
     }
 
@@ -184,7 +171,7 @@ public class DelayQueue<E extends Delayed> extends AbstractQueue<E>
         final ReentrantLock lock = this.lock;
         lock.lock();
         try {
-            E first = q.peek();
+            E first = q.peek(); // 查看堆顶
             if (first == null || first.getDelay(NANOSECONDS) > 0)
                 return null;
             else
@@ -203,35 +190,36 @@ public class DelayQueue<E extends Delayed> extends AbstractQueue<E>
      */
     public E take() throws InterruptedException {
         final ReentrantLock lock = this.lock;
-        lock.lockInterruptibly();
+        lock.lockInterruptibly(); // 1. 加锁（响应中断）
+        // 2. 无限循环（自旋 + 条件等待）
         try {
             for (;;) {
-                E first = q.peek();
-                if (first == null)
-                    available.await();
+                E first = q.peek(); // 3. 查看队首元素
+                if (first == null) available.await(); // 进入无限等待。 （释放锁，直到生产者调用 offer 插入元素并执行了available.signal()后）
                 else {
-                    long delay = first.getDelay(NANOSECONDS);
-                    if (delay <= 0)
-                        return q.poll();
+                    long delay = first.getDelay(NANOSECONDS); // 4. 检查队首元素是否已到期
+                    if (delay <= 0) // 元素已经到期了
+                        return q.poll(); // 获取堆顶元素并移除
+                    // 5. 元素未到期时的处理
                     first = null; // don't retain ref while waiting
                     if (leader != null)
-                        available.await();
-                    else {
+                        available.await(); // 说明已经有别的线程在充当“领导者”了，它正在专门等待这个队首元素的到期时间。
+                    else { // 目前没有线程在专门等这个元素到期
                         Thread thisThread = Thread.currentThread();
-                        leader = thisThread;
+                        leader = thisThread; // 当前线程自告奋勇成为 leader
                         try {
-                            available.awaitNanos(delay);
+                            available.awaitNanos(delay); // 释放锁，定时等待指定的延迟时间
                         } finally {
-                            if (leader == thisThread)
-                                leader = null;
+                            // 只要 leader 还是自己，就把自己从 leader 位置上撤下来（leader = null）。这样其他线程才有机会成为新的 leader。
+                            if (leader == thisThread)  leader = null;
                         }
                     }
                 }
             }
         } finally {
             if (leader == null && q.peek() != null)
-                available.signal();
-            lock.unlock();
+                available.signal(); // 唤醒一个正在 await 的追随者线程。（被唤醒的线程会成为新的 leader，或者取走已到期的元素。）
+            lock.unlock(); // 释放锁
         }
     }
 
@@ -253,7 +241,7 @@ public class DelayQueue<E extends Delayed> extends AbstractQueue<E>
             for (;;) {
                 E first = q.peek();
                 if (first == null) {
-                    if (nanos <= 0)
+                    if (nanos <= 0) // 超时后还是为空，就放弃。
                         return null;
                     else
                         nanos = available.awaitNanos(nanos);
@@ -261,7 +249,7 @@ public class DelayQueue<E extends Delayed> extends AbstractQueue<E>
                     long delay = first.getDelay(NANOSECONDS);
                     if (delay <= 0)
                         return q.poll();
-                    if (nanos <= 0)
+                    if (nanos <= 0) // 超时后还是为空，就放弃。
                         return null;
                     first = null; // don't retain ref while waiting
                     if (nanos < delay || leader != null)
