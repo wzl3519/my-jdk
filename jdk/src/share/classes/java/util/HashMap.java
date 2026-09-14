@@ -128,19 +128,17 @@ public class HashMap<K,V>
 {
 
     /**
-     * The default initial capacity - MUST be a power of two.
+     * 默认初始容量（16）
      */
     static final int DEFAULT_INITIAL_CAPACITY = 1 << 4; // aka 16
 
     /**
-     * The maximum capacity, used if a higher value is implicitly specified
-     * by either of the constructors with arguments.
-     * MUST be a power of two <= 1<<30.
+     * 最大容量 （即 2 的 30 次方）
      */
     static final int MAXIMUM_CAPACITY = 1 << 30;
 
     /**
-     * The load factor used when none specified in constructor.
+     * 默认负载因子
      */
     static final float DEFAULT_LOAD_FACTOR = 0.75f;
 
@@ -150,27 +148,22 @@ public class HashMap<K,V>
     static final Entry<?,?>[] EMPTY_TABLE = {};
 
     /**
-     * The table, resized as necessary. Length MUST Always be a power of two.
+     * 桶（数组）大小. 长度必须始终是2的幂。
      */
     transient Entry<?,?>[] table = EMPTY_TABLE;
 
     /**
-     * The number of key-value mappings contained in this map.
+     * 健值对数量
      */
     transient int size;
 
     /**
-     * The next size value at which to resize (capacity * load factor).
-     * @serial
+     * 扩容阈值
      */
-    // If table == EMPTY_TABLE then this is the initial capacity at which the
-    // table will be created when inflated.
     int threshold;
 
     /**
-     * The load factor for the hash table.
-     *
-     * @serial
+     * 负载系数
      */
     final float loadFactor;
 
@@ -260,7 +253,7 @@ public class HashMap<K,V>
 
         this.loadFactor = loadFactor;
         threshold = initialCapacity;
-        init();
+        init(); // 子类用
     }
 
     /**
@@ -300,22 +293,25 @@ public class HashMap<K,V>
     }
 
     static int roundUpToPowerOf2(int number) {
-        // assert number >= 0 : "number must be non-negative";
         return number >= MAXIMUM_CAPACITY
                 ? MAXIMUM_CAPACITY
                 : (number > 1) ? Integer.highestOneBit((number - 1) << 1) : 1;
+        // highestOneBit(n) 计算的是比 n 小的最近的 2 的幂，而我们要的是大于等于 n 的最小 2 的幂。
+        // 这样的话，需要通过返回值判断是否需要翻倍（有了if-else 分支），
+        // 而现在用 (number - 1) << 1，把“是否翻倍”的判断转化成了“输入数值大小”的变化（消除了 if-else 分支，让代码变成纯粹的顺序位运算。），
+        // 从而让 highestOneBit 内部统一的逻辑自动给出了正确结果。
     }
 
     /**
      * Inflates the table.
      */
     private void inflateTable(int toSize) {
-        // Find a power of 2 >= toSize
-        int capacity = roundUpToPowerOf2(toSize);
-
+        // 1. 计算初始化容量 （必须为 2 的幂次方）
+        int capacity = roundUpToPowerOf2(toSize); // 向上取整到最近的 2 的幂
+        // 2. 计算扩容阈值
         threshold = (int) Math.min(capacity * loadFactor, MAXIMUM_CAPACITY + 1);
-        table = new Entry<?,?>[capacity];
-        initHashSeedAsNeeded(capacity);
+        table = new Entry<?,?>[capacity]; // 3. 创建底层数组
+        initHashSeedAsNeeded(capacity); // 4. 初始化哈希种子 （这个种子会参与 hash() 函数的扰动计算，目的是防止哈希碰撞拒绝服务攻击）
     }
 
     // internal utilities
@@ -331,50 +327,57 @@ public class HashMap<K,V>
     }
 
     /**
-     * Initialize the hashing mask value. We defer initialization until we
-     * really need it.
+     * 初始化生成 随即种子
+     * put 触发 inflateTable 扩容时调用
      */
     final boolean initHashSeedAsNeeded(int capacity) {
-        boolean currentAltHashing = hashSeed != 0;
-        boolean useAltHashing = sun.misc.VM.isBooted() &&
-                (capacity >= Holder.ALTERNATIVE_HASHING_THRESHOLD);
-        boolean switching = currentAltHashing ^ useAltHashing;
+        // 1. 判断当前状态是否开启
+        boolean currentAltHashing = hashSeed != 0; // hashSeed != 0 说明当前已经启用了替代哈希（之前已经生成过随机种子）。
+        // 2. 判断目标状态是否开启
+        boolean useAltHashing = sun.misc.VM.isBooted() && // 确保 JVM 已经启动完成
+                (capacity >= Holder.ALTERNATIVE_HASHING_THRESHOLD); // 当前容量（或即将扩容到的容量）达到了设定的阈值（系统参数控制）。
+        // 3. 核心妙笔：异或判断状态切换 （只有当“当前状态”和“目标状态”不一致时，switching 才为 true。）
+        boolean switching = currentAltHashing ^ useAltHashing; //（一种非常优雅的无分支状态机写法，避免了 if-else 的冗长判断。）
         if (switching) {
             hashSeed = useAltHashing
-                ? sun.misc.Hashing.randomHashSeed(this)
-                : 0;
+                ? sun.misc.Hashing.randomHashSeed(this) // 开启，生成一个随机种子
+                : 0; // 关闭
         }
+
         return switching;
     }
 
     /**
-     * Retrieve object hash code and applies a supplemental hash function to the
-     * result hash, which defends against poor quality hash functions.  This is
-     * critical because HashMap uses power-of-two length hash tables, that
-     * otherwise encounter collisions for hashCodes that do not differ
-     * in lower bits. Note: Null keys always map to hash 0, thus index 0.
+     * 计算hash值
      */
     final int hash(Object k) {
+        // 1. 随机种子与 String 特殊处理
         int h = hashSeed;
         if (0 != h && k instanceof String) {
-            return sun.misc.Hashing.stringHash32((String) k);
+            return sun.misc.Hashing.stringHash32((String) k); // String 特殊哈希
         }
 
+        // 2. 初始混合
+        /* 如果 hashSeed == 0（未启用替代哈希），h 初始为 0，0 ^ k.hashCode() 就是 k.hashCode() 本身。
+           如果 hashSeed != 0，则 hashSeed 先与 hashCode 异或，把随机性混入。 */
         h ^= k.hashCode();
 
-        // This function ensures that hashCodes that differ only by
-        // constant multiples at each bit position have a bounded
-        // number of collisions (approximately 8 at default load factor).
+        // 3. 二次散列（扰动）函数  （防碰撞（把哈希值打散）。） ^的规则：相同为 0，不同为 1
+       /* 右移（>>>）：相当于把哈希值的“高层信息”往“低层”搬。
+          异或（^）：相当于把搬下来的“高层信息”和原来的“低层信息”搅拌在一起。
+          多次重复：JDK 7 觉得搅一次不够，所以连续搅了 2 轮（4次移位，5次异或），确保高位的信息彻底渗透到底层。 */
         h ^= (h >>> 20) ^ (h >>> 12);
         return h ^ (h >>> 7) ^ (h >>> 4);
     }
 
     /**
-     * Returns index for hash code h.
+     * 根据键的哈希值 h 和哈希表容量 length，计算出该键值对应该放在哪个桶（数组下标）里。
+     * h & (length - 1) 等价于 h % length;
      */
     static int indexFor(int h, int length) {
         // assert Integer.bitCount(length) == 1 : "length must be a non-zero power of 2";
-        return h & (length-1);
+        return h & (length-1); // 一、 核心原理：位运算取模
+        //h & (length - 1) 的效果是： 把 h 二进制中高于 length-1 的所有位全部清零，只保留最低的 log2(length) 位。这恰好就是 h 除以 length 的余数。
     }
 
     /**
@@ -475,39 +478,35 @@ public class HashMap<K,V>
     }
 
     /**
-     * Associates the specified value with the specified key in this map.
-     * If the map previously contained a mapping for the key, the old
-     * value is replaced.
-     *
-     * @param key key with which the specified value is to be associated
-     * @param value value to be associated with the specified key
-     * @return the previous value associated with <tt>key</tt>, or
-     *         <tt>null</tt> if there was no mapping for <tt>key</tt>.
-     *         (A <tt>null</tt> return can also indicate that the map
-     *         previously associated <tt>null</tt> with <tt>key</tt>.)
+     * 如果是新增（key 不存在），直接放入。
+     * 如果是更新（key 已存在），覆盖旧值，并返回旧值。
      */
     public V put(K key, V value) {
-        if (table == EMPTY_TABLE) {
-            inflateTable(threshold);
+        // 1.延迟初始化（懒加载）
+        if (table == EMPTY_TABLE) { // 如果底层数组还是默认的空表
+            inflateTable(threshold); // 根据阈值（threshold）初始化底层数组（table）
         }
+        // 2.对 null Key 的特殊处理
         if (key == null)
             return putForNullKey(value);
+        // 3.计算哈希与定位桶（Bucket）
         int hash = hash(key);
         int i = indexFor(hash, table.length);
         @SuppressWarnings("unchecked")
-        Entry<K,V> e = (Entry<K,V>)table[i];
+        Entry<K,V> e = (Entry<K,V>)table[i]; // 对应桶中获取链表
+        // 4.遍历链表，查找是否已存在该 Key
         for(; e != null; e = e.next) {
             Object k;
             if (e.hash == hash && ((k = e.key) == key || key.equals(k))) {
-                V oldValue = e.value;
-                e.value = value;
-                e.recordAccess(this);
+                V oldValue = e.value; // 获取旧值
+                e.value = value;  //赋新值
+                e.recordAccess(this); // 是一个空方法，专门留给 LinkedHashMap 等子类重写，用来实现 LRU 缓存淘汰策略。
                 return oldValue;
             }
         }
-
-        modCount++;
-        addEntry(hash, key, value, i);
+        // 5.插入新节点
+        modCount++; // 是 HashMap 的快速失败（fail-fast）机制，用于在迭代时防止并发修改。
+        addEntry(hash, key, value, i); // 以头插法的方式插入到链表的头部
         return null;
     }
 
@@ -516,17 +515,17 @@ public class HashMap<K,V>
      */
     private V putForNullKey(V value) {
         @SuppressWarnings("unchecked")
-        Entry<K,V> e = (Entry<K,V>)table[0];
-        for(; e != null; e = e.next) {
+        Entry<K,V> e = (Entry<K,V>)table[0]; // 桶（下标为 0 ）
+        for(; e != null; e = e.next) { // 查找是否已存在该 null Key
             if (e.key == null) {
-                V oldValue = e.value;
-                e.value = value;
+                V oldValue = e.value; // 获取旧值
+                e.value = value;  // 更新新值
                 e.recordAccess(this);
                 return oldValue;
             }
         }
         modCount++;
-        addEntry(0, null, value, 0);
+        addEntry(0, null, value, 0); // 以头插法的方式插入到链表的头部
         return null;
     }
 
@@ -577,38 +576,47 @@ public class HashMap<K,V>
      *        capacity is MAXIMUM_CAPACITY (in which case value
      *        is irrelevant).
      */
-    void resize(int newCapacity) {
+    void resize(int newCapacity) { // 入参：新容量
         Entry<?,?>[] oldTable = table;
-        int oldCapacity = oldTable.length;
+        int oldCapacity = oldTable.length; // 旧容量
+        // 1. 容量已达上限的"兜底"
         if (oldCapacity == MAXIMUM_CAPACITY) {
             threshold = Integer.MAX_VALUE;
-            return;
+            return; // 不再创建新数组 （再也不扩容）
         }
-
+        // 2. 创建新数组
         Entry<?,?>[] newTable = new Entry<?,?>[newCapacity];
+        // 3. 迁移数据（核心）
         transfer(newTable, initHashSeedAsNeeded(newCapacity));
-        table = newTable;
-        threshold = (int)Math.min(newCapacity * loadFactor, MAXIMUM_CAPACITY + 1);
+        // 4. 切换引用 + 更新阈值
+        table = newTable;  // 切换 新数组
+        threshold = (int)Math.min(newCapacity * loadFactor, MAXIMUM_CAPACITY + 1);  // 计算 新扩容阈值
     }
 
     /**
-     * Transfers all entries from current table to newTable.
+     * 迁移数据 （遍历旧数组的每一个桶、每一条链表，把每个 Entry 重新算位置，用头插法挂到新数组的对应桶里。如果 rehash 为 true，顺便重新计算哈希值。）
+     * 迁移完成后，链表完全反转了！（假设 新哈希后还是同一桶）
+     * 旧桶:  A → B → C → null
+     * 新桶:  C → B → A → null
      */
     @SuppressWarnings("unchecked")
     void transfer(Entry<?,?>[] newTable, boolean rehash) {
-        Entry<?,?>[] src = table;
+        Entry<?,?>[] src = table; // 获取 旧数据
         int newCapacity = newTable.length;
+        // 1. 外层：遍历旧数组的每个桶
         for (int j = 0; j < src.length; j++) {
-            Entry<K,V> e = (Entry<K,V>)src[j];
+            Entry<K,V> e = (Entry<K,V>)src[j]; // 获取对应桶上的链表数据
+            // 2. 内层：遍历桶里的链表
             while(null != e) {
                 Entry<K,V> next = e.next;
                 if (rehash) {
-                    e.hash = null == e.key ? 0 : hash(e.key);
+                    e.hash = null == e.key ? 0 : hash(e.key); // 3. 按需重新哈希
                 }
-                int i = indexFor(e.hash, newCapacity);
+                int i = indexFor(e.hash, newCapacity); // 4. 重新定位桶下标
+                // 5. 头插法插入新数组（核心！），也是 JDK 7 并发死循环的根源。O(1) 完成。
                 e.next = (Entry<K,V>)newTable[i];
                 newTable[i] = e;
-                e = next;
+                e = next; // 6. 推进到下一个节点
             }
         }
     }
@@ -882,34 +890,29 @@ public class HashMap<K,V>
     }
 
     /**
-     * Adds a new entry with the specified key, value and hash code to
-     * the specified bucket.  It is the responsibility of this
-     * method to resize the table if appropriate.
-     *
-     * Subclass overrides this to alter the behavior of put method.
+     * 往指定桶里塞一个新键值对。
+     * 塞之前先检查：如果"已经够满了"且"这个桶里已经有人了"，就先扩容翻倍、重新算位置，然后再插入。
      */
     void addEntry(int hash, K key, V value, int bucketIndex) {
-        if ((size >= threshold) && (null != table[bucketIndex])) {
-            resize(2 * table.length);
-            hash = (null != key) ? hash(key) : 0;
-            bucketIndex = indexFor(hash, table.length);
+        // 1. 扩容判断
+        if ((size >= threshold) &&  // 当前元素总数 ≥ 扩容阈值
+                (null != table[bucketIndex])) { // 要插入的这个桶里已经有元素了
+            resize(2 * table.length); // 2. 扩容翻倍
+            // 3. 扩容后重新哈希 + 重新定位
+            hash = (null != key) ? hash(key) : 0;  // 可能切换了 hashSeed，所以需要重新计算
+            bucketIndex = indexFor(hash, table.length);    // 依赖 table.length，所以也需要重新计算
         }
-
+        // 4. 正式插入 （头插法）
         createEntry(hash, key, value, bucketIndex);
     }
 
     /**
-     * Like addEntry except that this version is used when creating entries
-     * as part of Map construction or "pseudo-construction" (cloning,
-     * deserialization).  This version needn't worry about resizing the table.
-     *
-     * Subclass overrides this to alter the behavior of HashMap(Map),
-     * clone, and readObject.
+     * 往指定桶里插一个新节点（头插法），不做任何扩容检查，size++，完事。
      */
     void createEntry(int hash, K key, V value, int bucketIndex) {
         @SuppressWarnings("unchecked")
-            Entry<K,V> e = (Entry<K,V>)table[bucketIndex];
-        table[bucketIndex] = new Entry<>(hash, key, value, e);
+            Entry<K,V> e = (Entry<K,V>)table[bucketIndex]; // 拿到当前桶的头节点
+        table[bucketIndex] = new Entry<>(hash, key, value, e); // 新节点挂载到头部
         size++;
     }
 

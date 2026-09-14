@@ -1037,25 +1037,19 @@ public final class Integer extends Number implements Comparable<Integer> {
     public static final int SIZE = 32;
 
     /**
-     * Returns an {@code int} value with at most a single one-bit, in the
-     * position of the highest-order ("leftmost") one-bit in the specified
-     * {@code int} value.  Returns zero if the specified value has no
-     * one-bits in its two's complement binary representation, that is, if it
-     * is equal to zero.
-     *
-     * @return an {@code int} value with a single one-bit, in the position
-     *     of the highest-order one-bit in the specified value, or zero if
-     *     the specified value is itself equal to zero.
-     * @since 1.5
+     * 返回的是比 i 小的最近的 2 的幂
+     * >>   有符号右移    补符号位（正数补 0，负数补 1） 右移后正负号保持不变（负数依然是负数）。
+     * >>>	无符号右移	高位一律补 0	 不管原数是正数还是负数，最高位都会变成 0，结果必定是正数。
      */
     public static int highestOneBit(int i) {
-        // HD, Figure 3-1
-        i |= (i >>  1);
-        i |= (i >>  2);
-        i |= (i >>  4);
-        i |= (i >>  8);
-        i |= (i >> 16);
-        return i - (i >>> 1);
+        // 倍增传播。把最高位 1 右边的所有位全部"感染"成 1
+        i |= (i >>  1); //  → 最高位1传播到右边1位   (覆盖2位)
+        i |= (i >>  2); // →  传播到右边2位          (覆盖4位)
+        i |= (i >>  4); //  → 传播到右边4位          (覆盖8位)
+        i |= (i >>  8); // → 传播到右边8位          (覆盖16位)
+        i |= (i >> 16); // → 传播到右边16位         (覆盖32位，int 全范围)
+        // 每步把"已感染区域"翻倍，5 步就能覆盖 int 的 32 位全部范围。这是对数级的——不管数字多大，永远只需 5 次移位或运算。
+        return i - (i >>> 1); // 成功提取最高位的 1
     }
 
     /**
