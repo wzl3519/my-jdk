@@ -122,13 +122,11 @@ import sun.misc.SharedSecrets;
  * @since   1.2
  */
 
-public class HashMap<K,V>
-    extends AbstractMap<K,V>
-    implements Map<K,V>, Cloneable, Serializable
+public class HashMap<K,V> extends AbstractMap<K,V> implements Map<K,V>, Cloneable, Serializable
 {
 
     /**
-     * 默认初始容量（16）
+     * 默认初始容量（16） 必须是 2 的幂
      */
     static final int DEFAULT_INITIAL_CAPACITY = 1 << 4; // aka 16
 
@@ -143,17 +141,17 @@ public class HashMap<K,V>
     static final float DEFAULT_LOAD_FACTOR = 0.75f;
 
     /**
-     * An empty table instance to share when the table is not inflated.
+     * 共享空数组实例，所有新 HashMap 共用
      */
     static final Entry<?,?>[] EMPTY_TABLE = {};
 
     /**
-     * 桶（数组）大小. 长度必须始终是2的幂。
+     * 底层哈希桶数组，真正存数据的地方 （长度必须始终是2的幂）
      */
     transient Entry<?,?>[] table = EMPTY_TABLE;
 
     /**
-     * 健值对数量
+     * 当前键值对数量
      */
     transient int size;
 
@@ -163,58 +161,48 @@ public class HashMap<K,V>
     int threshold;
 
     /**
-     * 负载系数
+     * 实际使用的负载因子，构造后不可变
      */
     final float loadFactor;
 
     /**
-     * The number of times this HashMap has been structurally modified
-     * Structural modifications are those that change the number of mappings in
-     * the HashMap or otherwise modify its internal structure (e.g.,
-     * rehash).  This field is used to make iterators on Collection-views of
-     * the HashMap fail-fast.  (See ConcurrentModificationException).
+     * 结构修改次数（fail-fast 机制）
      */
     transient int modCount;
 
     /**
-     * The default threshold of map capacity above which alternative hashing is
-     * used for String keys. Alternative hashing reduces the incidence of
-     * collisions due to weak hash code calculation for String keys.
-     * <p/>
-     * This value may be overridden by defining the system property
-     * {@code jdk.map.althashing.threshold}. A property value of {@code 1}
-     * forces alternative hashing to be used at all times whereas
-     * {@code -1} value ensures that alternative hashing is never used.
+     * 启用 alternative hashing 的阈值
      */
     static final int ALTERNATIVE_HASHING_THRESHOLD_DEFAULT = Integer.MAX_VALUE;
 
     /**
-     * holds values which can't be initialized until after VM is booted.
+     * 用静态内部类 Holder 延迟初始化，确保 JVM 完全启动后才读取系统属性
      */
     private static class Holder {
 
         /**
-         * Table capacity above which to switch to use alternative hashing.
+         * 作为是否启用 alternative hashing 的阈值
          */
         static final int ALTERNATIVE_HASHING_THRESHOLD;
 
         static {
+            // 用 doPrivileged 读取系统属性 （—绕过调用者权限限制，确保能读到系统属性—
             String altThreshold = java.security.AccessController.doPrivileged(
                 new sun.security.action.GetPropertyAction(
                     "jdk.map.althashing.threshold"));
 
             int threshold;
-            try {
+            try { // 2. 解析阈值
                 threshold = (null != altThreshold)
                         ? Integer.parseInt(altThreshold)
                         : ALTERNATIVE_HASHING_THRESHOLD_DEFAULT;
 
-                // disable alternative hashing if -1
+                // 3. 特殊处理 -1
                 if (threshold == -1) {
                     threshold = Integer.MAX_VALUE;
                 }
 
-                if (threshold < 0) {
+                if (threshold < 0) { // 4. 参数校验
                     throw new IllegalArgumentException("value must be positive integer.");
                 }
             } catch(IllegalArgumentException failed) {
@@ -233,13 +221,7 @@ public class HashMap<K,V>
     transient int hashSeed = 0;
 
     /**
-     * Constructs an empty <tt>HashMap</tt> with the specified initial
-     * capacity and load factor.
-     *
-     * @param  initialCapacity the initial capacity
-     * @param  loadFactor      the load factor
-     * @throws IllegalArgumentException if the initial capacity is negative
-     *         or the load factor is nonpositive
+     * 创建指定容量和负载系数的实例
      */
     public HashMap(int initialCapacity, float loadFactor) {
         if (initialCapacity < 0)
@@ -257,39 +239,29 @@ public class HashMap<K,V>
     }
 
     /**
-     * Constructs an empty <tt>HashMap</tt> with the specified initial
-     * capacity and the default load factor (0.75).
-     *
-     * @param  initialCapacity the initial capacity.
-     * @throws IllegalArgumentException if the initial capacity is negative.
+     * 创建指定容量和默认负载系数（0.75）的实例
      */
     public HashMap(int initialCapacity) {
         this(initialCapacity, DEFAULT_LOAD_FACTOR);
     }
 
     /**
-     * Constructs an empty <tt>HashMap</tt> with the default initial capacity
-     * (16) and the default load factor (0.75).
+     * 创建默认容量（16）和默认负载系数（0.75）的实例
      */
     public HashMap() {
         this(DEFAULT_INITIAL_CAPACITY, DEFAULT_LOAD_FACTOR);
     }
 
     /**
-     * Constructs a new <tt>HashMap</tt> with the same mappings as the
-     * specified <tt>Map</tt>.  The <tt>HashMap</tt> is created with
-     * default load factor (0.75) and an initial capacity sufficient to
-     * hold the mappings in the specified <tt>Map</tt>.
-     *
-     * @param   m the map whose mappings are to be placed in this map
-     * @throws  NullPointerException if the specified map is null
+     * 创建已有数据的实例
      */
     public HashMap(Map<? extends K, ? extends V> m) {
+        // 根据待拷贝 Map 的大小，反推一个"刚好够用且不触发扩容"的容量。
         this(Math.max((int) (m.size() / DEFAULT_LOAD_FACTOR) + 1,
                       DEFAULT_INITIAL_CAPACITY), DEFAULT_LOAD_FACTOR);
-        inflateTable(threshold);
+        inflateTable(threshold); // 初始化底层数组
 
-        putAllForCreate(m);
+        putAllForCreate(m); // 批量插入
     }
 
     static int roundUpToPowerOf2(int number) {
@@ -303,7 +275,7 @@ public class HashMap<K,V>
     }
 
     /**
-     * Inflates the table.
+     * 初始化底层数组
      */
     private void inflateTable(int toSize) {
         // 1. 计算初始化容量 （必须为 2 的幂次方）
@@ -399,44 +371,27 @@ public class HashMap<K,V>
     }
 
     /**
-     * Returns the value to which the specified key is mapped,
-     * or {@code null} if this map contains no mapping for the key.
-     *
-     * <p>More formally, if this map contains a mapping from a key
-     * {@code k} to a value {@code v} such that {@code (key==null ? k==null :
-     * key.equals(k))}, then this method returns {@code v}; otherwise
-     * it returns {@code null}.  (There can be at most one such mapping.)
-     *
-     * <p>A return value of {@code null} does not <i>necessarily</i>
-     * indicate that the map contains no mapping for the key; it's also
-     * possible that the map explicitly maps the key to {@code null}.
-     * The {@link #containsKey containsKey} operation may be used to
-     * distinguish these two cases.
-     *
-     * @see #put(Object, Object)
+     * 通过 key 查询 value
+     *   key 不存在，返回 null；
+     *   key 存在，但 value 就是 null（即 put(key, null)），返回null
      */
     @SuppressWarnings("unchecked")
     public V get(Object key) {
         if (key == null)
-            return (V)getForNullKey();
-        Entry<K,V> entry = getEntry(key);
+            return (V)getForNullKey(); // null key 的特殊处理
+        Entry<K,V> entry = getEntry(key); // 正常 key 的查找
 
         return null == entry ? null : entry.getValue();
     }
 
-    /**
-     * Offloaded version of get() to look up null keys.  Null keys map
-     * to index 0.  This null case is split out into separate methods
-     * for the sake of performance in the two most commonly used
-     * operations (get and put), but incorporated with conditionals in
-     * others.
-     */
+
     private Object getForNullKey() {
         if (size == 0) {
             return null;
         }
+        // 遍历 table[0] 的链表
         for (Entry<?,?> e = table[0]; e != null; e = e.next) {
-            if (e.key == null)
+            if (e.key == null) // null key 用 == 比较（只有 null == null）
                 return e.value;
         }
         return null;
@@ -465,11 +420,13 @@ public class HashMap<K,V>
             return null;
         }
 
-        int hash = (key == null) ? 0 : hash(key);
+        int hash = (key == null) ? 0 : hash(key); // 计算哈希
+        // 3. 定位桶 + 遍历链表
         for (Entry<?,?> e = table[indexFor(hash, table.length)];
              e != null;
              e = e.next) {
             Object k;
+            // 4. 三重比较
             if (e.hash == hash &&
                 ((k = e.key) == key || (key != null && key.equals(k))))
                 return (Entry<K,V>)e;
@@ -530,30 +487,24 @@ public class HashMap<K,V>
     }
 
     /**
-     * This method is used instead of put by constructors and
-     * pseudoconstructors (clone, readObject).  It does not resize the table,
-     * check for comodification, etc.  It calls createEntry rather than
-     * addEntry.
+     * 在"已知不会触发扩容"的前提下，往 HashMap 中插入一个键值对
      */
     private void putForCreate(K key, V value) {
+        // 1. 计算哈希和定位桶
         int hash = null == key ? 0 : hash(key);
         int i = indexFor(hash, table.length);
 
-        /**
-         * Look for preexisting entry for key.  This will never happen for
-         * clone or deserialize.  It will only happen for construction if the
-         * input Map is a sorted map whose ordering is inconsistent w/ equals.
-         */
+        // 2. 遍历链表查重
         for (@SuppressWarnings("unchecked")
              Entry<?,V> e = (Entry<?,V>)table[i]; e != null; e = e.next) {
             Object k;
             if (e.hash == hash &&
                 ((k = e.key) == key || (key != null && key.equals(k)))) {
-                e.value = value;
-                return;
+                e.value = value; // 找到相同 key，直接替换 value
+                return; // 直接返回，不插入新节点
             }
         }
-
+        // 3. 没找到 → 创建新节点
         createEntry(hash, key, value, i);
     }
 
@@ -820,11 +771,14 @@ public class HashMap<K,V>
         return result;
     }
 
+    /**
+     * 链表节点类 Entry
+     */
     static class Entry<K,V> implements Map.Entry<K,V> {
-        final K key;
-        V value;
-        Entry<K,V> next;
-        int hash;
+        final K key; // 键 —— final，创建后不可变
+        V value;    // 值 —— 可变，put 时会被替换
+        Entry<K,V> next;    // 指向下一个节点（链表指针）
+        int hash;   // 缓存 key 的哈希值，避免重复计算
 
         /**
          * Creates new entry.
@@ -874,16 +828,13 @@ public class HashMap<K,V>
         }
 
         /**
-         * This method is invoked whenever the value in an entry is
-         * overwritten by an invocation of put(k,v) for a key k that's already
-         * in the HashMap.
+         * 留给子类的钩子 （put 覆盖旧值时调用）
          */
         void recordAccess(HashMap<K,V> m) {
         }
 
         /**
-         * This method is invoked whenever the entry is
-         * removed from the table.
+         * 留给子类的钩子 （remove 时调用）
          */
         void recordRemoval(HashMap<K,V> m) {
         }
