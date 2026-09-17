@@ -142,23 +142,14 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
     /* ---------------- Fields -------------- */
 
     /**
-     * holds values which can't be initialized until after VM is booted.
+     * 静态内部类，作用是延迟加载——Holder 类不会在 HashMap 类加载时就初始化，而是在第一次有人访问 Holder.ALTERNATIVE_HASHING 时才触发 static 块执行。
      */
     private static class Holder {
 
-        /**
-        * Enable alternative hashing of String keys?
-        *
-        * <p>Unlike the other hash map implementations we do not implement a
-        * threshold for regulating whether alternative hashing is used for
-        * String keys. Alternative hashing is either enabled for all instances
-        * or disabled for all instances.
-        */
         static final boolean ALTERNATIVE_HASHING;
 
         static {
-            // Use the "threshold" system property even though our threshold
-            // behaviour is "ON" or "OFF".
+            // 读取 JVM 系统属性
             String altThreshold = java.security.AccessController.doPrivileged(
                 new sun.security.action.GetPropertyAction(
                     "jdk.map.althashing.threshold"));
@@ -167,20 +158,19 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
             try {
                 threshold = (null != altThreshold)
                         ? Integer.parseInt(altThreshold)
-                        : Integer.MAX_VALUE;
+                        : Integer.MAX_VALUE; // 默认不启用
 
-                // disable alternative hashing if -1
-                if (threshold == -1) {
+                if (threshold == -1) { // 特殊处理 -1
                     threshold = Integer.MAX_VALUE;
                 }
 
-                if (threshold < 0) {
+                if (threshold < 0) { // 参数校验
                     throw new IllegalArgumentException("value must be positive integer.");
                 }
             } catch(IllegalArgumentException failed) {
                 throw new Error("Illegal value for 'jdk.map.althashing.threshold'", failed);
             }
-            ALTERNATIVE_HASHING = threshold <= MAXIMUM_CAPACITY;
+            ALTERNATIVE_HASHING = threshold <= MAXIMUM_CAPACITY; // Integer.MAX_VALUE 大于 1<<30 → false；任何合理正整数都 ≤ 1<<30 → true。
         }
     }
 
