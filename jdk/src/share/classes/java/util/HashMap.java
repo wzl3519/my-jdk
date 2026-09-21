@@ -520,28 +520,21 @@ public class HashMap<K,V> extends AbstractMap<K,V>
         return (e = getNode(hash(key), key)) == null ? null : e.value;
     }
 
-    /**
-     * Implements Map.get and related methods.
-     *
-     * @param hash hash for key
-     * @param key the key
-     * @return the node, or null if none
-     */
     final Node<K,V> getNode(int hash, Object key) {
         Node<K,V>[] tab; Node<K,V> first, e; int n; K k;
-        if ((tab = table) != null && (n = tab.length) > 0 &&
-            (first = tab[(n - 1) & hash]) != null) {
-            if (first.hash == hash && // always check first node
-                ((k = first.key) == key || (key != null && key.equals(k))))
+        if ((tab = table) != null && (n = tab.length) > 0 && // 判空
+            (first = tab[(n - 1) & hash]) != null) {       // 定位桶，获取头节点
+            if (first.hash == hash &&
+                ((k = first.key) == key || (key != null && key.equals(k)))) // 情况一：头节点就是目标节点
                 return first;
             if ((e = first.next) != null) {
-                if (first instanceof TreeNode)
+                if (first instanceof TreeNode) // 情况二：遇到红黑树节点
                     return ((TreeNode<K,V>)first).getTreeNode(hash, key);
-                do {
+                do { // 情况三：普通链表遍历
                     if (e.hash == hash &&
-                        ((k = e.key) == key || (key != null && key.equals(k))))
+                        ((k = e.key) == key || (key != null && key.equals(k)))) // 已匹配到目标节点
                         return e;
-                } while ((e = e.next) != null);
+                } while ((e = e.next) != null);  // 没找到，继续遍历下一个
             }
         }
         return null;
@@ -582,7 +575,7 @@ public class HashMap<K,V> extends AbstractMap<K,V>
                    boolean evict) {
         Node<K,V>[] tab; Node<K,V> p; int n, i;
         if ((tab = table) == null || (n = tab.length) == 0) // ======>1、 初始化检查（懒加载）
-            n = (tab = resize()).length;    // 扩容
+            n = (tab = resize()).length;    // 初始化
         if ((p = tab[i = (n - 1) & hash]) == null) // ======> 2、计算下标 & 桶为空的情况
             tab[i] = newNode(hash, key, value, null); // 直接创建一个新Node节点，当头节点放桶内
         else { // ======> 3、桶不为空
@@ -654,7 +647,7 @@ public class HashMap<K,V> extends AbstractMap<K,V>
         //  ----------  保存阈值 & 创建新数组  ----------
         threshold = newThr;
         @SuppressWarnings({"rawtypes","unchecked"})
-        Node<K,V>[] newTab = (Node<K,V>[])new Node[newCap];
+        Node<K,V>[] newTab = (Node<K,V>[])new Node[newCap]; // oldTab ==null; 就是初始化数组，要不就是扩容新数组
         table = newTab;
         // ---------- 数据迁移（核心精华）----------
         if (oldTab != null) {
@@ -1867,6 +1860,7 @@ public class HashMap<K,V> extends AbstractMap<K,V>
          * Calls find for root node.
          */
         final TreeNode<K,V> getTreeNode(int h, Object k) {
+
             return ((parent != null) ? root() : this).find(h, k, null);
         }
 
