@@ -2033,11 +2033,11 @@ class Thread implements Runnable {
     // concurrent code, and we can not risk accidental false sharing.
     // Hence, the fields are isolated with @Contended.
 
-    /** The current seed for a ThreadLocalRandom */
+    /** 线程的随机数种子，用于 ThreadLocalRandom */
     @sun.misc.Contended("tlr")
     long threadLocalRandomSeed;
 
-    /** Probe hash value; nonzero if threadLocalRandomSeed initialized */
+    /** 线程的哈希探测值，用于分散线程到不同的哈希桶。 */
     @sun.misc.Contended("tlr")
     int threadLocalRandomProbe;
 

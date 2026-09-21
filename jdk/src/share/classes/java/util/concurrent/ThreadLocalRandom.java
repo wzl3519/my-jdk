@@ -154,12 +154,12 @@ public class ThreadLocalRandom extends Random {
     private static final long GAMMA = 0x9e3779b97f4a7c15L;
 
     /**
-     * The increment for generating probe values
+     * probe步长。数学来源：黄金比例 φ 的 32 位整数近似。 设计目标：均匀分布，让线程分散到不同桶
      */
     private static final int PROBE_INCREMENT = 0x9e3779b9;
 
     /**
-     * The increment of seeder per new instance
+     * seed步长。数学来源：SHA-256 密码学常量。 设计目标：位混淆质量，让种子序列统计上不可预测
      */
     private static final long SEEDER_INCREMENT = 0xbb67ae8584caa73bL;
 
@@ -197,16 +197,14 @@ public class ThreadLocalRandom extends Random {
     static final ThreadLocalRandom instance = new ThreadLocalRandom();
 
     /**
-     * Initialize Thread fields for the current thread.  Called only
-     * when Thread.threadLocalRandomProbe is zero, indicating that a
-     * thread local seed value needs to be generated. Note that even
-     * though the initialization is purely thread-local, we need to
-     * rely on (static) atomic generators to initialize the values.
+     * 初始化当前线程的线程本地随机状态
      */
     static final void localInit() {
-        int p = probeGenerator.addAndGet(PROBE_INCREMENT);
-        int probe = (p == 0) ? 1 : p; // skip 0
-        long seed = mix64(seeder.getAndAdd(SEEDER_INCREMENT));
+        // probeGenerator、seeder：静态 AtomicInteger，所有线程共享。
+        // 原子性地将增加步长并返回新值。每个线程拿到不同的值，天然唯一。
+        int p = probeGenerator.addAndGet(PROBE_INCREMENT); // 生成 Probe 值（哈希探测码）。
+        int probe = (p == 0) ? 1 : p; // 确保 probe 不为 0。 0 是 未初始化标志
+        long seed = mix64(seeder.getAndAdd(SEEDER_INCREMENT)); // 生成 Seed 值（随机数种子）
         Thread t = Thread.currentThread();
         UNSAFE.putLong(t, SEED, seed);
         UNSAFE.putInt(t, PROBE, probe);
@@ -972,19 +970,19 @@ public class ThreadLocalRandom extends Random {
      */
 
     /**
-     * Returns the probe value for the current thread without forcing
-     * initialization. Note that invoking ThreadLocalRandom.current()
-     * can be used to force initialization on zero return.
+     * probe 值读取器
+     *  多个线程拿到的值一样吗？不一样，因为 probe 是存在每个线程自己的 Thread 对象里的，不是全局共享变量。
      */
     static final int getProbe() {
         return UNSAFE.getInt(Thread.currentThread(), PROBE);
     }
 
     /**
-     * Pseudo-randomly advances and records the given probe value for the
-     * given thread.
+     * 更新线程 probe 值 （只改当前线程自己的 PROBE 字段。 不会影响其他线程。）
+     * Xorshift 伪随机数生成器
      */
     static final int advanceProbe(int probe) {
+        // 参数 (13, 17, 5) 是经过数学证明能产生高质量伪随机序列的黄金参数。
         probe ^= probe << 13;   // xorshift
         probe ^= probe >>> 17;
         probe ^= probe << 5;
